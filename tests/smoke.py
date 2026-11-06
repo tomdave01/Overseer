@@ -26,7 +26,6 @@ def main() -> None:
     events, frames = generate_match(seed=42)
     first_ten_minutes = ReplayDataset(
         name="synthetic-first-ten-minutes",
-        source="synthetic",
         events=[event for event in events if event["minute"] <= 10],
         frames=[frame for frame in frames if frame["minute"] <= 10],
     )

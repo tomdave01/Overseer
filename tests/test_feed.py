@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 from datetime import datetime, timezone
 from typing import Any
 
@@ -48,7 +47,6 @@ class _CollectingProducer:
 def _message(seq: int, *, goal: bool = False) -> FeedMessage:
     event = {
         "match_id": "match-1",
-        "clip_id": None,
         "source": "synthetic",
         "minute": float(seq + 1),
         "t": None,
@@ -169,23 +167,7 @@ def test_unconfigured_event_hubs_uses_shared_in_process_queue(monkeypatch, caplo
     assert "not a distributed transport" in caplog.text
 
 
-def test_simulator_publishes_processed_clip_before_synthetic_records(
-    monkeypatch, tmp_path
-):
-    clip_events = [
-        {
-            "match_id": "clip-match",
-            "minute": 0.017,
-            "t": 1.0,
-            "type": "pass",
-        }
-    ]
-    clip_frames = [{"minute": 0.008, "t": 0.5}]
-    events_path = tmp_path / "clip-events.json"
-    frames_path = tmp_path / "clip-frames.json"
-    events_path.write_text(json.dumps(clip_events), encoding="utf-8")
-    frames_path.write_text(json.dumps(clip_frames), encoding="utf-8")
-
+def test_simulator_publishes_only_synthetic_records(monkeypatch):
     def fake_generate_match(
         seed: int,
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
@@ -203,18 +185,11 @@ def test_simulator_publishes_processed_clip_before_synthetic_records(
             producer,
             speed=1_000_000,
             match_id="shared-match",
-            clip_events_path=str(events_path),
-            clip_frames_path=str(frames_path),
         )
 
-    assert asyncio.run(run()) == 4
-    assert [message.source for message in producer.messages] == [
-        "video",
-        "video",
-        "synthetic",
-        "synthetic",
-    ]
-    assert [message.seq for message in producer.messages] == [0, 1, 2, 3]
+    assert asyncio.run(run()) == 2
+    assert [message.source for message in producer.messages] == ["synthetic", "synthetic"]
+    assert [message.seq for message in producer.messages] == [0, 1]
     assert all(message.match_id == "shared-match" for message in producer.messages)
     assert [message.match_clock for message in producer.messages] == sorted(
         message.match_clock for message in producer.messages
@@ -227,6 +202,9 @@ def test_narration_cache_key_includes_fact_mode_language_and_favourite():
     assert base != narration_cache_key("fact-1", "Analyst", "English", "Rovers")
     assert base != narration_cache_key("fact-1", "Broadcast", "French", "Rovers")
     assert base != narration_cache_key("fact-1", "Broadcast", "English", "United")
+    neutral = narration_cache_key("fact-1", "Fan", "English", "Neutral")
+    assert neutral != narration_cache_key("fact-1", "Fan", "English", "Rovers")
+    assert neutral != narration_cache_key("fact-1", "Fan", "English", "United")
 
     async def run() -> None:
         cache = InMemoryNarrationCache()

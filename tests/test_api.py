@@ -30,26 +30,22 @@ def test_static_dashboard_and_state_route():
         missing_frame = client.get("/frame?minute=1")
         assert missing_frame.status_code == 404
         assert client.get("/overlays/recent").json() == []
+        assert "Synthetic data" in page.text or "SYNTHETIC DATA" in page.text
+        assert client.get("/clip-video").status_code == 404
 
 
-def test_clip_video_supports_byte_range_requests(tmp_path, monkeypatch):
-    clip_path = tmp_path / "clip.mp4"
-    clip_path.write_bytes(bytes(range(64)))
-    monkeypatch.setenv("CLIP_VIDEO_PATH", str(clip_path))
-    with TestClient(app) as client:
-        response = client.get("/clip-video", headers={"Range": "bytes=0-9"})
-    assert response.status_code == 206
-    assert len(response.content) == 10
+def test_favourite_club_defaults_to_neutral():
+    assert ReplayManager().favourite_team == "Neutral"
 
 
-def test_frame_lookup_uses_t_for_clip_and_minute_for_shifted_synthetic_frames():
+def test_frame_lookup_uses_t_and_minute_for_synthetic_frames():
     original_state = manager.state
     manager.state = MatchState(
         frames=[
             {
                 "t": 5.0,
                 "minute": 0.1,
-                "source": "video",
+                "source": "synthetic",
                 "poss": "Rovers",
                 "ball": {"x": 10, "y": 10},
                 "players": [],
@@ -66,9 +62,9 @@ def test_frame_lookup_uses_t_for_clip_and_minute_for_shifted_synthetic_frames():
     )
     try:
         with TestClient(app) as client:
-            clip = client.get("/frame?minute=0.1&t=5&source=video")
+            timed = client.get("/frame?minute=0.1&t=5&source=synthetic")
             synthetic = client.get("/frame?minute=30.1&source=synthetic")
-        assert clip.json()["frame"]["source"] == "video"
+        assert timed.json()["frame"]["minute"] == 0.1
         assert synthetic.json()["frame"]["source"] == "synthetic"
     finally:
         manager.state = original_state
@@ -204,7 +200,6 @@ def test_feed_update_survives_missing_foundry_configuration(monkeypatch):
             state,
             event={
                 "match_id": "match-1",
-                "clip_id": None,
                 "source": "synthetic",
                 "minute": 1.0,
                 "t": None,
@@ -269,7 +264,6 @@ def test_control_preferences_and_fan_query():
                 "type": "shot",
                 "outcome": "on_target",
                 "t": None,
-                "clip_id": None,
             },
             {
                 "minute": 11.0,
@@ -278,7 +272,6 @@ def test_control_preferences_and_fan_query():
                 "type": "shot",
                 "outcome": "off_target",
                 "t": None,
-                "clip_id": None,
             },
         ],
         frames=[
@@ -317,19 +310,9 @@ def test_control_preferences_and_fan_query():
             )
             assert cleared.json()["favourite_player"] is None
 
-            query = client.post(
-                "/fan-query",
-                json={"query": "Rico Vale shots on target"},
-            )
-            assert query.status_code == 200
-            assert query.json()["count"] == 1
-            assert query.json()["clips"][0]["player"] == "Rico Vale"
             frame = client.get("/frame?minute=9.9")
             assert frame.status_code == 200
             assert frame.json()["frame"]["minute"] == 10.0
-
-            blank_query = client.post("/fan-query", json={"query": " "})
-            assert blank_query.status_code == 422
     finally:
         manager.state = original_state
         (

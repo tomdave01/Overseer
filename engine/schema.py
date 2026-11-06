@@ -8,13 +8,14 @@ from typing import Any
 
 EVENT_FIELDS = frozenset(
     {
-        "match_id", "clip_id", "source", "minute", "t", "type", "team",
+        "match_id", "source", "minute", "t", "type", "team",
         "player", "outcome", "x", "y", "end_x", "end_y",
     }
 )
 FRAME_FIELDS = frozenset({"t", "minute", "poss", "ball", "players"})
 FRAME_OPTIONAL_FIELDS = frozenset({"source"})
 PLAYER_FIELDS = frozenset({"id", "team", "role", "x", "y"})
+PLAYER_OPTIONAL_FIELDS = frozenset({"shirt", "name", "short_name"})
 
 EVENT_OUTCOMES = {
     "pass": {"complete", "lost"},
@@ -43,10 +44,8 @@ def validate_event(event: Any) -> None:
         raise ValueError("Event must contain exactly the shared Event schema fields")
     if not isinstance(event["match_id"], str) or not event["match_id"]:
         raise ValueError("Event match_id must be a non-empty string")
-    if event["clip_id"] is not None and not isinstance(event["clip_id"], str):
-        raise ValueError("Event clip_id must be a string or null")
-    if event["source"] not in {"synthetic", "video"}:
-        raise ValueError("Event source must be synthetic or video")
+    if event["source"] != "synthetic":
+        raise ValueError("Event source must be synthetic")
     minute = _number(event["minute"], "Event minute")
     if minute < 0:
         raise ValueError("Event minute must not be negative")
@@ -72,8 +71,8 @@ def validate_frame(frame: Any) -> None:
     allowed_fields = (FRAME_FIELDS, FRAME_FIELDS | FRAME_OPTIONAL_FIELDS)
     if not isinstance(frame, dict) or set(frame) not in allowed_fields:
         raise ValueError("Frame must contain exactly the shared Frame schema fields")
-    if "source" in frame and frame["source"] not in {"synthetic", "video"}:
-        raise ValueError("Frame source must be synthetic or video")
+    if "source" in frame and frame["source"] != "synthetic":
+        raise ValueError("Frame source must be synthetic")
     if _number(frame["minute"], "Frame minute") < 0:
         raise ValueError("Frame minute must not be negative")
     if _number(frame["t"], "Frame t") < 0:
@@ -89,11 +88,26 @@ def validate_frame(frame: Any) -> None:
     if not isinstance(players, list):
         raise ValueError("Frame players must be a list")
     for player in players:
-        if not isinstance(player, dict) or set(player) != PLAYER_FIELDS:
-            raise ValueError("Frame player must contain exactly the shared Player fields")
+        if (
+            not isinstance(player, dict)
+            or not PLAYER_FIELDS <= set(player)
+            or set(player) - PLAYER_FIELDS - PLAYER_OPTIONAL_FIELDS
+        ):
+            raise ValueError("Frame player contains unsupported or missing fields")
         if not isinstance(player["id"], str) or player["team"] not in TEAMS:
             raise ValueError("Frame player must have a string id and supported team")
         if player["role"] not in ROLES:
             raise ValueError("Frame player role is not supported")
+        if "shirt" in player and (
+            isinstance(player["shirt"], bool)
+            or not isinstance(player["shirt"], int)
+            or player["shirt"] < 1
+        ):
+            raise ValueError("Frame player shirt must be a positive integer")
+        for field in ("name", "short_name"):
+            if field in player and (
+                not isinstance(player[field], str) or not player[field].strip()
+            ):
+                raise ValueError(f"Frame player {field} must be a non-empty string")
         _number(player["x"], "Frame player x", coordinate=True)
         _number(player["y"], "Frame player y", coordinate=True)

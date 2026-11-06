@@ -1,4 +1,4 @@
-"""Time-ordered replay of clip and synthetic match records."""
+"""Time-ordered replay of synthetic match records."""
 
 from __future__ import annotations
 
@@ -11,15 +11,45 @@ from typing import Any, Callable, Iterable
 
 from agents.orchestrator import Orchestrator
 from engine.state import MatchState, ingest
+from generator.match import player_metadata
+
+
+_PLAYER_METADATA = player_metadata()
+
+
+def _synthetic_event(event: dict[str, Any]) -> dict[str, Any]:
+    normalized = {
+        key: value for key, value in event.items()
+        if key != "clip_id"
+    }
+    normalized["source"] = "synthetic"
+    return normalized
+
+
+def _synthetic_frame(frame: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(frame)
+    normalized["source"] = "synthetic"
+    normalized["players"] = [
+        {
+            **player,
+            **{
+                key: value
+                for key, value in _PLAYER_METADATA.get(
+                    str(player.get("id")), {}
+                ).items()
+                if key != "team" or player.get("team") == value
+            },
+        }
+        for player in frame.get("players", [])
+    ]
+    return normalized
 
 
 @dataclass
 class ReplayDataset:
     name: str
-    source: str
     events: list[dict[str, Any]] = field(default_factory=list)
     frames: list[dict[str, Any]] = field(default_factory=list)
-    video_path: str | Path | None = None
 
     @classmethod
     def from_files(
@@ -28,8 +58,6 @@ class ReplayDataset:
         frames_path: str | Path,
         *,
         name: str,
-        source: str,
-        video_path: str | Path | None = None,
     ) -> "ReplayDataset":
         event_file = Path(events_path)
         frame_file = Path(frames_path)
@@ -42,10 +70,8 @@ class ReplayDataset:
             raise ValueError(f"Replay dataset {name} must contain JSON arrays")
         return cls(
             name=name,
-            source=source,
-            events=events,
-            frames=frames,
-            video_path=video_path,
+            events=[_synthetic_event(event) for event in events],
+            frames=[_synthetic_frame(frame) for frame in frames],
         )
 
 
@@ -218,9 +244,8 @@ class ReplayEngine:
                 else float(event.get("minute", 0.0)) * 60.0
             )
             absolute_time = timeline_offset + local_time
-            normalized = dict(event)
+            normalized = _synthetic_event(event)
             normalized["minute"] = absolute_time / 60.0
-            normalized["source"] = str(event.get("source", dataset.source))
             records.append((absolute_time, 0, "event", normalized))
 
         for frame in dataset.frames:
@@ -230,9 +255,8 @@ class ReplayEngine:
                 else float(frame.get("minute", 0.0)) * 60.0
             )
             absolute_time = timeline_offset + local_time
-            normalized = dict(frame)
+            normalized = _synthetic_frame(frame)
             normalized["minute"] = absolute_time / 60.0
-            normalized["source"] = str(frame.get("source", dataset.source))
             records.append((absolute_time, 1, "frame", normalized))
 
         records.sort(key=lambda item: (item[0], item[1]))
@@ -243,19 +267,13 @@ def default_datasets(
     *,
     events_path: str | Path | None = None,
     frames_path: str | Path | None = None,
-    clip: ReplayDataset | None = None,
 ) -> list[ReplayDataset]:
-    """Load optional clip records first, followed by the generated match."""
+    """Load the generated synthetic match."""
     project_root = Path(__file__).resolve().parent.parent
-    datasets: list[ReplayDataset] = []
-    if clip is not None:
-        datasets.append(clip)
-    datasets.append(
+    return [
         ReplayDataset.from_files(
             events_path or project_root / "outputs" / "synthetic_events.json",
             frames_path or project_root / "outputs" / "synthetic_frames.json",
             name="synthetic",
-            source="synthetic",
         )
-    )
-    return datasets
+    ]

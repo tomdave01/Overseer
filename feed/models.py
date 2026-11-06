@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 from typing import Any, Literal
 
 
-Source = Literal["video", "synthetic"]
+Source = Literal["synthetic"]
 RecordKind = Literal["event", "frame"]
 
 
@@ -41,9 +41,9 @@ class FeedMessage:
             raise ValueError("match_clock must not be negative")
         if (
             not isinstance(self.source, str)
-            or self.source not in {"video", "synthetic"}
+            or self.source != "synthetic"
         ):
-            raise ValueError("source must be video or synthetic")
+            raise ValueError("source must be synthetic")
         if not isinstance(self.payload, dict):
             raise ValueError("payload must be an object")
         kind = self.payload.get("kind")

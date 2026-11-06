@@ -16,7 +16,6 @@ from agents.analysis_tools import (
     ShapeAnalysisTool,
 )
 from agents.framework_agents import AgentSuite, build_agent_suite
-from agents.fan_curator import FanCurator
 from agents.narrator import Narrator
 from engine.state import MatchState
 from feed.persistence import NarrationCache
@@ -43,7 +42,6 @@ class Orchestrator:
         self,
         narrator: Narrator | None = None,
         *,
-        fan_curator: FanCurator | None = None,
         narration_cache: NarrationCache | None = None,
         framework_agents_enabled: bool = False,
     ) -> None:
@@ -52,7 +50,6 @@ class Orchestrator:
         self.impact_tool = ImpactAnalysisTool()
         self.moment_tool = MomentDetectionTool()
         self.narrator = narrator or Narrator(cache=narration_cache)
-        self.fan_curator = fan_curator or FanCurator()
         self.framework_agents_enabled = framework_agents_enabled
         self._agent_state: MatchState | None = None
         self._agent_suite: AgentSuite | None = None

@@ -19,10 +19,7 @@
     moments: [],
     overlays: [],
     selectedEvent: null,
-    selectedClip: null,
     spotlight: null,
-    objectUrl: null,
-    videoSource: null,
     toastTimer: null
   };
 
@@ -338,7 +335,6 @@
     if (snapshot.impact) state.impact = snapshot.impact;
     if (snapshot.momentum_series) state.momentum = snapshot.momentum_series;
     if (snapshot.moments) state.moments = snapshot.moments;
-    if (snapshot.source === "video" && snapshot.frame) syncClipVideo(snapshot.frame);
     renderShape(state.shape);
     renderPatterns(state.patterns);
     renderImpact(state.impact);
@@ -347,7 +343,6 @@
     drawPitch();
     drawMomentum();
     updatePlayerOptions(state.events);
-    $("#fan-panel").hidden = $("#mode").value !== "Fan";
     if (snapshot.error) showToast(snapshot.error);
   }
 
@@ -391,15 +386,13 @@
       ...event,
       key: `${event.minute}-${event.team}-${event.player}-${event.type}`
     };
-    state.selectedClip = event;
     state.spotlight = event.player ? { player: event.player } : null;
     $("#replay-button").disabled = false;
     renderEvents();
     drawPitch();
     $("#spotlight-label").textContent = event.player ? `SPOTLIGHT · ${event.player.toUpperCase()}` : "NO PLAYER SPOTLIGHT";
     const timeParameter = event.t == null ? "" : `&t=${encodeURIComponent(event.t)}`;
-    const sourceParameter = event.source ? `&source=${encodeURIComponent(event.source)}` : "";
-    api(`/frame?minute=${encodeURIComponent(event.minute || 0)}${timeParameter}${sourceParameter}`)
+    api(`/frame?minute=${encodeURIComponent(event.minute || 0)}${timeParameter}`)
       .then((result) => {
         if (state.selectedEvent?.key !== `${event.minute}-${event.team}-${event.player}-${event.type}`) return;
         state.frame = result.frame;
@@ -410,41 +403,6 @@
       });
   }
 
-  function seekVideo(event) {
-    const video = $("#video");
-    if (event.t == null) return;
-    if (event.source === "video" && !video.classList.contains("loaded")) {
-      attachClipVideo();
-    }
-    if (!video.classList.contains("loaded")) return;
-    video.currentTime = Math.max(0, Number(event.t));
-    const playResult = video.play();
-    if (playResult && typeof playResult.catch === "function") playResult.catch(() => {});
-  }
-
-  function attachClipVideo() {
-    const video = $("#video");
-    if (state.videoSource || video.classList.contains("loaded")) return;
-    state.videoSource = apiUrl("/clip-video");
-    video.src = state.videoSource;
-    video.muted = true;
-    video.classList.add("loaded");
-    $("#video-empty").hidden = true;
-  }
-
-  function syncClipVideo(frame) {
-    const video = $("#video");
-    if (video.dataset.localVideo === "true") return;
-    attachClipVideo();
-    if (!video.classList.contains("loaded") || frame.t == null) return;
-    const timestamp = Math.max(0, Number(frame.t));
-    if (Number.isFinite(timestamp) && Math.abs(video.currentTime - timestamp) > 0.35) {
-      video.currentTime = timestamp;
-    }
-    const playResult = video.play();
-    if (playResult && typeof playResult.catch === "function") playResult.catch(() => {});
-  }
-
   function replayMoment(moment) {
     const matchEvent = state.events.find((event) =>
       Math.abs(Number(event.minute) - Number(moment.minute)) < 0.1 &&
@@ -453,7 +411,6 @@
     );
     if (matchEvent) {
       selectEvent(matchEvent);
-      seekVideo(matchEvent);
     } else {
       state.selectedEvent = {
         ...moment,
@@ -477,33 +434,6 @@
         });
     }
     showToast(moment.why || `Replaying ${moment.type || "match moment"}`);
-  }
-
-  async function runFanQuery(query) {
-    const result = await api("/fan-query", {
-      method: "POST",
-      body: JSON.stringify({ query })
-    });
-    $("#fan-result").textContent = `${result.count} matching event${result.count === 1 ? "" : "s"} · ${result.compiled_by} filter`;
-    const clips = $("#fan-clips");
-    clips.innerHTML = result.clips.slice(0, 12).map((clip, index) =>
-      `<button class="fan-clip" type="button" data-index="${index}">
-        <span>${Number(clip.minute || 0).toFixed(1)}' · ${escapeHtml(clip.player || "Unknown")} · ${escapeHtml(clip.type)}</span>
-        <span>${escapeHtml(clip.team || "")} ›</span>
-      </button>`
-    ).join("");
-    clips.querySelectorAll(".fan-clip").forEach((button) => {
-      button.addEventListener("click", () => {
-        const clip = result.clips[Number(button.dataset.index)];
-        selectEvent(clip.event);
-        seekVideo(clip.event);
-      });
-    });
-    if (result.count && result.clips[0]) {
-      selectEvent(result.clips[0].event);
-      seekVideo(result.clips[0].event);
-    }
-    $("#fan-panel").scrollIntoView({ behavior: "smooth", block: "nearest" });
   }
 
   function connectStream() {
@@ -539,38 +469,17 @@
   });
   for (const id of ["speed", "mode", "language", "favourite-team", "favourite-player"]) {
     $(`#${id}`).addEventListener("change", async () => {
-      if (id === "mode") $("#fan-panel").hidden = $("#mode").value !== "Fan";
       try { await sendControl(); } catch (error) { showToast(error.message); }
     });
   }
   $("#replay-button").addEventListener("click", () => {
     if (state.selectedEvent) {
       selectEvent(state.selectedEvent);
-      seekVideo(state.selectedEvent);
     }
-  });
-  $("#fan-form").addEventListener("submit", async (event) => {
-    event.preventDefault();
-    const query = $("#fan-query").value.trim();
-    if (!query) return;
-    try { await runFanQuery(query); } catch (error) { showToast(error.message); }
-  });
-  $("#video-file").addEventListener("change", (event) => {
-    const file = event.target.files && event.target.files[0];
-    if (!file) return;
-    const video = $("#video");
-    if (state.objectUrl) URL.revokeObjectURL(state.objectUrl);
-    state.objectUrl = URL.createObjectURL(file);
-    video.src = state.objectUrl;
-    video.dataset.localVideo = "true";
-    video.classList.add("loaded");
-    $("#video-empty").hidden = true;
-    showToast(`Loaded local clip: ${file.name}`);
   });
   window.addEventListener("resize", () => { drawPitch(); drawMomentum(); });
 
   connectStream();
-  $("#fan-panel").hidden = $("#mode").value !== "Fan";
   api("/overlays/recent?limit=100")
     .then((overlays) => {
       overlays.forEach(renderOverlay);

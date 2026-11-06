@@ -18,34 +18,48 @@ GOAL_TIMES = ((24.0, ROVERS), (58.0, UNITED), (72.0, ROVERS))
 KEY_ROVERS_PLAYER = "Rico Vale"
 
 
-def _roster() -> dict[str, list[dict[str, str]]]:
+def _roster() -> dict[str, list[dict[str, Any]]]:
     return {
         ROVERS: [
-            {"id": "R-GK-01", "name": "Milo Hart", "role": "GK"},
-            {"id": "R-DF-01", "name": "Tomas Reed", "role": "DEF"},
-            {"id": "R-DF-02", "name": "Eli Ward", "role": "DEF"},
-            {"id": "R-DF-03", "name": "Noah Pike", "role": "DEF"},
-            {"id": "R-DF-04", "name": "Sam Rowan", "role": "DEF"},
-            {"id": "R-MF-01", "name": KEY_ROVERS_PLAYER, "role": "MID"},
-            {"id": "R-MF-02", "name": "Ari Stone", "role": "MID"},
-            {"id": "R-MF-03", "name": "Kai Mercer", "role": "MID"},
-            {"id": "R-MF-04", "name": "Jude Ellis", "role": "MID"},
-            {"id": "R-FW-01", "name": "Leo Vale", "role": "FWD"},
-            {"id": "R-FW-02", "name": "Finn Cole", "role": "FWD"},
+            {"id": "R-GK-01", "shirt": 1, "name": "Milo Hart", "short_name": "M. Hart", "role": "GK"},
+            {"id": "R-DF-01", "shirt": 2, "name": "Tomas Reed", "short_name": "T. Reed", "role": "DEF"},
+            {"id": "R-DF-02", "shirt": 3, "name": "Eli Ward", "short_name": "E. Ward", "role": "DEF"},
+            {"id": "R-DF-03", "shirt": 4, "name": "Noah Pike", "short_name": "N. Pike", "role": "DEF"},
+            {"id": "R-DF-04", "shirt": 5, "name": "Sam Rowan", "short_name": "S. Rowan", "role": "DEF"},
+            {"id": "R-MF-01", "shirt": 6, "name": KEY_ROVERS_PLAYER, "short_name": "R. Vale", "role": "MID"},
+            {"id": "R-MF-02", "shirt": 8, "name": "Ari Stone", "short_name": "A. Stone", "role": "MID"},
+            {"id": "R-MF-03", "shirt": 10, "name": "Kai Mercer", "short_name": "K. Mercer", "role": "MID"},
+            {"id": "R-MF-04", "shirt": 11, "name": "Jude Ellis", "short_name": "J. Ellis", "role": "MID"},
+            {"id": "R-FW-01", "shirt": 9, "name": "Leo Vale", "short_name": "L. Vale", "role": "FWD"},
+            {"id": "R-FW-02", "shirt": 7, "name": "Finn Cole", "short_name": "F. Cole", "role": "FWD"},
         ],
         UNITED: [
-            {"id": "U-GK-01", "name": "Owen Shaw", "role": "GK"},
-            {"id": "U-DF-01", "name": "Ben Frost", "role": "DEF"},
-            {"id": "U-DF-02", "name": "Max Quinn", "role": "DEF"},
-            {"id": "U-DF-03", "name": "Jay Brooks", "role": "DEF"},
-            {"id": "U-DF-04", "name": "Cal Webb", "role": "DEF"},
-            {"id": "U-MF-01", "name": "Nico Lane", "role": "MID"},
-            {"id": "U-MF-02", "name": "Ash Bell", "role": "MID"},
-            {"id": "U-MF-03", "name": "Ezra King", "role": "MID"},
-            {"id": "U-FW-01", "name": "Theo Gray", "role": "FWD"},
-            {"id": "U-FW-02", "name": "Ira West", "role": "FWD"},
-            {"id": "U-FW-03", "name": "Remy Lake", "role": "FWD"},
+            {"id": "U-GK-01", "shirt": 1, "name": "Owen Shaw", "short_name": "O. Shaw", "role": "GK"},
+            {"id": "U-DF-01", "shirt": 2, "name": "Ben Frost", "short_name": "B. Frost", "role": "DEF"},
+            {"id": "U-DF-02", "shirt": 3, "name": "Max Quinn", "short_name": "M. Quinn", "role": "DEF"},
+            {"id": "U-DF-03", "shirt": 4, "name": "Jay Brooks", "short_name": "J. Brooks", "role": "DEF"},
+            {"id": "U-DF-04", "shirt": 5, "name": "Cal Webb", "short_name": "C. Webb", "role": "DEF"},
+            {"id": "U-MF-01", "shirt": 6, "name": "Nico Lane", "short_name": "N. Lane", "role": "MID"},
+            {"id": "U-MF-02", "shirt": 8, "name": "Ash Bell", "short_name": "A. Bell", "role": "MID"},
+            {"id": "U-MF-03", "shirt": 10, "name": "Ezra King", "short_name": "E. King", "role": "MID"},
+            {"id": "U-FW-01", "shirt": 7, "name": "Theo Gray", "short_name": "T. Gray", "role": "FWD"},
+            {"id": "U-FW-02", "shirt": 9, "name": "Ira West", "short_name": "I. West", "role": "FWD"},
+            {"id": "U-FW-03", "shirt": 11, "name": "Remy Lake", "short_name": "R. Lake", "role": "FWD"},
         ],
+    }
+
+
+def player_metadata() -> dict[str, dict[str, Any]]:
+    return {
+        player["id"]: {
+            "team": team,
+            "role": player["role"],
+            "shirt": player["shirt"],
+            "name": player["name"],
+            "short_name": player["short_name"],
+        }
+        for team, squad in _roster().items()
+        for player in squad
     }
 
 
@@ -57,7 +71,7 @@ def _raw_x(team: str, x: float) -> float:
     return x if team == ROVERS else 100.0 - x
 
 
-def _layout(roster: list[dict[str, str]], team: str) -> list[tuple[float, float]]:
+def _layout(roster: list[dict[str, Any]], team: str) -> list[tuple[float, float]]:
     if team == ROVERS:
         rows = {
             "GK": (5.0, (50.0,)),
@@ -250,7 +264,6 @@ def _build_events(
             all_events.append(
                 {
                     "match_id": MATCH_ID,
-                    "clip_id": None,
                     "source": "synthetic",
                     "minute": round(event_time / 60.0, 3),
                     "t": None,
@@ -276,7 +289,6 @@ def _build_events(
         attacking_x = rng.uniform(86.0, 96.0)
         goal_event = {
             "match_id": MATCH_ID,
-            "clip_id": None,
             "source": "synthetic",
             "minute": goal_minute,
             "t": None,
@@ -382,6 +394,9 @@ def _make_frames(
                         "id": player["id"],
                         "team": team,
                         "role": player["role"],
+                        "shirt": player["shirt"],
+                        "name": player["name"],
+                        "short_name": player["short_name"],
                         "x": round(raw_x, 2),
                         "y": round(y, 2),
                     }

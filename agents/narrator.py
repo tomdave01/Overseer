@@ -25,8 +25,11 @@ _INSTRUCTIONS = (
     "language (English, Spanish, Arabic, or French) and mode: broadcast is "
     "one punchy headline sentence; analyst is two sentences with the metric "
     "and why it matters; fan is one short emotional sentence from the "
-    "favourite team's side. Return plain text only."
+    "favourite team's side. If the favourite club is Neutral, use balanced "
+    "third-person narration that treats Rovers and United equally. Return "
+    "plain text only."
 )
+FAVOURITE_TEAMS = {"Rovers", "United", "Neutral"}
 
 
 class Narrator:
@@ -54,13 +57,15 @@ class Narrator:
         *,
         mode: str = "Broadcast",
         language: str = "English",
-        favourite_team: str | None = None,
+        favourite_team: str | None = "Neutral",
         favourite_player: str | None = None,
     ) -> dict[str, Any]:
         if mode not in SUPPORTED_MODES:
             raise ValueError(f"Unsupported narration mode: {mode}")
         if language not in SUPPORTED_LANGUAGES:
             raise ValueError(f"Unsupported narration language: {language}")
+        if favourite_team not in FAVOURITE_TEAMS:
+            favourite_team = "Neutral"
         facts = self._facts(state, favourite_team, favourite_player)
         fact_id = hashlib.sha256(
             json.dumps(
@@ -224,20 +229,29 @@ class Narrator:
             (item for item in state.impact if item["player"] == favourite_player),
             None,
         )
-        team = favourite_team if favourite_team in state.shape.get("teams", {}) else "Rovers"
-        team_shape = state.shape.get("teams", {}).get(team, {})
+        team = favourite_team if favourite_team in {"Rovers", "United"} else "Neutral"
+        team_shape = (
+            state.shape.get("teams", {})
+            if team == "Neutral"
+            else state.shape.get("teams", {}).get(team, {})
+        )
+        shape_facts = (
+            {"teams": team_shape}
+            if team == "Neutral"
+            else {
+                "in_possession": team_shape.get("in_possession"),
+                "out_of_possession": team_shape.get("out_of_possession"),
+                "block": team_shape.get("block"),
+                "marking": team_shape.get("marking"),
+            }
+        )
         return {
             "minute": round(state.minute, 2),
             "score": dict(state.score),
             "team_focus": team,
             "favourite_player": favourite_player,
             "favourite_player_impact": selected_player,
-            "shape": {
-                "in_possession": team_shape.get("in_possession"),
-                "out_of_possession": team_shape.get("out_of_possession"),
-                "block": team_shape.get("block"),
-                "marking": team_shape.get("marking"),
-            },
+            "shape": shape_facts,
             "patterns": state.patterns.get("findings", {}),
             "top_impact": top_players,
             "latest_moments": recent_moments,
@@ -258,6 +272,34 @@ class Narrator:
             None,
         )
         notable_pattern = next(iter(patterns.values()), None)
+
+        if team == "Neutral":
+            score_text = f"Rovers {score.get('Rovers', 0)}-{score.get('United', 0)} United"
+            if scoring_moment:
+                subject = f"{scoring_moment.get('player', 'A player')} scores for {scoring_moment.get('team')}."
+                if language == "Spanish":
+                    subject = f"{scoring_moment.get('player', 'Un jugador')} marca para {scoring_moment.get('team')}."
+                elif language == "French":
+                    subject = f"{scoring_moment.get('player', 'Un joueur')} marque pour {scoring_moment.get('team')}."
+                elif language == "Arabic":
+                    subject = f"{scoring_moment.get('player', 'لاعب')} يسجل لـ {scoring_moment.get('team')}."
+            elif best:
+                subject = f"{best['player']} leads measured player impact."
+                if language == "Spanish":
+                    subject = f"{best['player']} lidera el impacto medido."
+                elif language == "French":
+                    subject = f"{best['player']} mène l'impact mesuré."
+                elif language == "Arabic":
+                    subject = f"{best['player']} يتصدر التأثير المقاس."
+            else:
+                subject = ""
+            if language == "Spanish":
+                return f"{subject} {score_text}." if subject else f"Minuto {minute:.0f}: {score_text}."
+            if language == "French":
+                return f"{subject} {score_text}." if subject else f"{minute:.0f}e minute : {score_text}."
+            if language == "Arabic":
+                return f"{subject} {score_text}." if subject else f"الدقيقة {minute:.0f}: {score_text}."
+            return f"{minute:.0f}' | {score_text}. {subject}".strip()
 
         if language == "Spanish":
             score_text = f"Rovers {score.get('Rovers', 0)}-{score.get('United', 0)} United"

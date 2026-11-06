@@ -18,7 +18,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
-from agents.fan_curator import FanCurator
 from agents.orchestrator import Orchestrator
 from api.overlays import (
     Overlay,
@@ -29,6 +28,7 @@ from api.overlays import (
     stable_fact_id,
 )
 from engine.replay import ReplayDataset, ReplayEngine, default_datasets
+from engine.stats import StatsAggregator
 from engine.state import MatchState
 from feed.clients import create_feed_consumer
 from feed.models import FeedMessage
@@ -46,21 +46,18 @@ class ControlRequest(BaseModel):
     speed: float | None = Field(default=None, gt=0, le=1000)
     mode: Literal["Broadcast", "Analyst", "Fan"] | None = None
     language: Literal["English", "Spanish", "Arabic", "French"] | None = None
-    favourite_team: Literal["Rovers", "United"] | None = None
+    favourite_team: Literal["Rovers", "United", "Neutral"] | None = None
     favourite_player: str | None = Field(default=None, max_length=80)
-
-
-class FanQueryRequest(BaseModel):
-    query: str = Field(min_length=1, max_length=500)
 
 
 class ReplayManager:
     def __init__(self) -> None:
         self.state = MatchState()
+        self.stats = StatsAggregator()
         self.speed = 50.0
         self.mode = "Broadcast"
         self.language = "English"
-        self.favourite_team = "Rovers"
+        self.favourite_team = "Neutral"
         self.favourite_player: str | None = None
         self.status = "idle"
         self.error: str | None = None
@@ -71,11 +68,10 @@ class ReplayManager:
         self._task: asyncio.Task[None] | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._subscribers: set[asyncio.Queue[str]] = set()
-        self.fan_curator = FanCurator()
         self.orchestrator = Orchestrator(framework_agents_enabled=True)
+        self.stats = StatsAggregator()
         self.feed_processor: FeedProcessor | None = None
         self._agent_tasks: set[asyncio.Task[Any]] = set()
-        self._last_video_frame_t = -1.0
         self.overlays = OverlayHistory()
         self._last_record_wall_time = datetime.now(timezone.utc)
         self.overlay_latency_ms: float | None = None
@@ -314,6 +310,11 @@ class ReplayManager:
         self.state = state
         self.status = "live"
         self.match_clock = message.match_clock
+        record = {**message.record, "source": message.source}
+        if message.kind == "event":
+            self.stats.add_event(record)
+        else:
+            self.stats.add_frame(record)
         self._last_record_wall_time = datetime.fromisoformat(
             message.wall_time_utc.replace("Z", "+00:00")
         ).astimezone(timezone.utc)
@@ -448,7 +449,6 @@ class ReplayManager:
         self.error = None
         self.match_clock = 0.0
         self.status = "starting"
-        self._last_video_frame_t = -1.0
         self.overlays.clear()
         self.overlay_latency_ms = None
         self._loop = asyncio.get_running_loop()
@@ -468,6 +468,10 @@ class ReplayManager:
         self._fanout(self.compact_snapshot())
 
     def _on_replay_record(self, kind: str, record: dict[str, Any]) -> None:
+        if kind == "event":
+            self.stats.add_event(record)
+        else:
+            self.stats.add_frame(record)
         wall_time = record.get("wall_time_utc")
         if wall_time is None:
             self._last_record_wall_time = datetime.now(timezone.utc)
@@ -482,37 +486,9 @@ class ReplayManager:
         else:
             raise ValueError("record wall_time_utc must be an ISO-8601 string")
         self.match_clock = max(0.0, float(self.state.minute) * 60.0)
-        if kind != "frame" or record.get("source") != "video":
-            return
-        timestamp = float(record.get("t", 0.0))
-        if timestamp - self._last_video_frame_t < 0.5:
-            return
-        self._last_video_frame_t = timestamp
-        self.publish_video_frame()
-
-    def publish_video_frame(self) -> None:
-        if self._loop is None or self._loop.is_closed():
-            return
-        self._loop.call_soon_threadsafe(self._fanout, self.compact_snapshot())
-
     async def _run_worker(self) -> None:
         try:
-            clip = None
-            clip_events = os.getenv("CLIP_EVENTS_PATH")
-            clip_frames = os.getenv("CLIP_FRAMES_PATH")
-            clip_video = os.getenv("CLIP_VIDEO_PATH")
-            if bool(clip_events) != bool(clip_frames):
-                raise RuntimeError("CLIP_EVENTS_PATH and CLIP_FRAMES_PATH must be set together")
-            if clip_events and clip_frames:
-                clip = await asyncio.to_thread(
-                    ReplayDataset.from_files,
-                    clip_events,
-                    clip_frames,
-                    name="video-clip",
-                    source="video",
-                    video_path=clip_video,
-                )
-            datasets = await asyncio.to_thread(default_datasets, clip=clip)
+            datasets = await asyncio.to_thread(default_datasets)
             engine = self._engine
             if engine is None:
                 raise RuntimeError("Replay engine was not initialized")
@@ -681,17 +657,6 @@ async def app_script() -> FileResponse:
     return FileResponse(WEB_DIR / "app.js", media_type="text/javascript")
 
 
-@app.get("/clip-video", include_in_schema=False)
-async def clip_video() -> FileResponse:
-    video_path = os.getenv("CLIP_VIDEO_PATH")
-    if not video_path:
-        raise HTTPException(status_code=404, detail="CLIP_VIDEO_PATH is not configured")
-    path = Path(video_path)
-    if not path.is_file():
-        raise HTTPException(status_code=404, detail=f"Configured clip video does not exist: {path}")
-    return FileResponse(path, media_type="video/mp4")
-
-
 @app.get("/styles.css", include_in_schema=False)
 async def styles() -> FileResponse:
     return FileResponse(WEB_DIR / "styles.css", media_type="text/css")
@@ -713,11 +678,31 @@ async def get_state() -> dict[str, Any]:
     return manager.full_snapshot()
 
 
+@app.get("/stats/players")
+async def get_player_stats(
+    team: Literal["Rovers", "United"] | None = None,
+) -> dict[str, Any]:
+    return {
+        "minute": round(manager.state.minute, 2),
+        "players": manager.stats.player_stats(team),
+    }
+
+
+@app.get("/stats/teams")
+async def get_team_stats(
+    team: Literal["Rovers", "United"] | None = None,
+) -> dict[str, Any]:
+    return {
+        "minute": round(manager.state.minute, 2),
+        "teams": manager.stats.team_stats(team),
+    }
+
+
 @app.get("/frame")
 async def get_frame(
     minute: float = Query(ge=0),
     t: float | None = Query(default=None, ge=0),
-    source: Literal["video", "synthetic"] | None = None,
+    source: Literal["synthetic"] | None = None,
 ) -> dict[str, Any]:
     frames = manager.state.frames
     if not frames:
@@ -750,14 +735,6 @@ async def get_frame(
 @app.post("/control")
 async def control(data: ControlRequest) -> dict[str, Any]:
     return await manager.update(data)
-
-
-@app.post("/fan-query")
-async def fan_query(data: FanQueryRequest) -> dict[str, Any]:
-    query = data.query.strip()
-    if not query:
-        raise HTTPException(status_code=422, detail="query must not be blank")
-    return await manager.fan_curator.query_async(manager.state, query)
 
 
 @app.get("/stream")

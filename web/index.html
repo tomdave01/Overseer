@@ -42,23 +42,6 @@
 
       <section class="main-grid">
         <div class="visual-column">
-          <section class="panel video-panel">
-            <div class="section-heading">
-              <div><span class="eyebrow">MATCH FEED</span><h2>Video replay</h2></div>
-              <label class="file-button" for="video-file">LOAD CLIP</label>
-              <input id="video-file" type="file" accept="video/*" hidden>
-            </div>
-            <div class="video-frame">
-              <video id="video" controls playsinline></video>
-              <div id="video-empty" class="video-empty">
-                <span class="video-icon">▶</span>
-                <strong>Clip preview</strong>
-                <span>Load a local clip, or follow the live synthetic match on the pitch.</span>
-              </div>
-              <div class="video-tag"><span class="live-indicator"><i></i> REPLAY</span></div>
-            </div>
-          </section>
-
           <section class="panel pitch-panel">
             <div class="section-heading">
               <div><span class="eyebrow">LIVE TRACKING</span><h2>Match pitch</h2></div>
@@ -91,7 +74,7 @@
                 <select id="language"><option>English</option><option>Spanish</option><option>Arabic</option><option>French</option></select>
               </label>
               <label>FAVOURITE CLUB
-                <select id="favourite-team"><option>Rovers</option><option>United</option></select>
+                <select id="favourite-team"><option>Neutral</option><option>Rovers</option><option>United</option></select>
               </label>
               <label>FAVOURITE PLAYER
                 <select id="favourite-player"><option value="">Choose player</option></select>
@@ -142,15 +125,6 @@
             <div class="chart-teams"><span>ROVERS</span><span>UNITED</span></div>
           </section>
 
-          <section id="fan-panel" class="panel fan-panel">
-            <div class="section-heading compact-heading"><div><span class="eyebrow">BUILD A REEL</span><h2>Fan compilation</h2></div></div>
-            <form id="fan-form" class="fan-form">
-              <input id="fan-query" type="search" placeholder="e.g. Rico Vale's shots on target" maxlength="500" required>
-              <button class="button button-primary" type="submit">FIND</button>
-            </form>
-            <p id="fan-result" class="fan-result">Search match events to build a mini highlight reel.</p>
-            <div id="fan-clips" class="fan-clips"></div>
-          </section>
         </aside>
       </section>
     </main>

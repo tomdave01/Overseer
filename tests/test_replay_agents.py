@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from types import SimpleNamespace
 
-from agents import FanCurator, Orchestrator
+from agents import Orchestrator
 from agents.framework_agents import build_agent_suite, build_analysis_tools
 from agents.narrator import Narrator
 from engine.replay import ReplayDataset, ReplayEngine
@@ -19,13 +20,10 @@ def _event(
     outcome: str,
     *,
     minute: float = 0.0,
-    source: str = "synthetic",
-    clip_id: str | None = None,
 ) -> dict:
     return {
         "match_id": "test",
-        "clip_id": clip_id,
-        "source": source,
+        "source": "synthetic",
         "minute": minute,
         "t": None,
         "type": "shot",
@@ -55,90 +53,49 @@ class _FakeAgent:
 
 def test_ingest_tracks_goals_minute_and_source():
     state = MatchState()
-    ingest(state, event=_event("Rovers", "Rico Vale", "goal", minute=2, source="video"))
+    ingest(state, event=_event("Rovers", "Rico Vale", "goal", minute=2))
     assert state.score == {"Rovers": 1, "United": 0}
     assert state.minute == 2
-    assert state.source == "video"
+    assert state.source == "synthetic"
 
 
-def test_replay_processes_clip_before_synthetic_and_offsets_timeline():
-    clip_goal = _event("United", "Ira West", "goal", source="video", clip_id="c1")
-    clip_goal["t"] = 4.0
-    clip = ReplayDataset(
-        name="clip",
-        source="video",
-        events=[clip_goal],
-        frames=[{"t": 0.0, "minute": 0.0, "poss": "United", "ball": {"x": 50, "y": 50}, "players": []}],
+def test_replay_processes_only_synthetic_records(tmp_path):
+    events_path = tmp_path / "events.json"
+    frames_path = tmp_path / "frames.json"
+    events_path.write_text(
+        json.dumps([{**_event("Rovers", "Rico Vale", "goal"), "clip_id": None}]),
+        encoding="utf-8",
     )
-    synthetic = ReplayDataset(
+    frames_path.write_text(
+        json.dumps([{
+            "t": 0.0,
+            "minute": 0.0,
+            "poss": "Rovers",
+            "ball": {"x": 50, "y": 50},
+            "players": [{
+                "id": "R-MF-01",
+                "team": "Rovers",
+                "role": "MID",
+                "x": 50,
+                "y": 50,
+            }],
+        }]),
+        encoding="utf-8",
+    )
+    dataset = ReplayDataset.from_files(
+        events_path,
+        frames_path,
         name="generated",
-        source="synthetic",
-        events=[_event("Rovers", "Rico Vale", "goal")],
-        frames=[{"t": 0.0, "minute": 0.0, "poss": "Rovers", "ball": {"x": 50, "y": 50}, "players": []}],
     )
     state = MatchState()
     engine = ReplayEngine(state, speed=1_000_000, tick_interval=2.5)
-    engine.run([clip, synthetic])
-    assert [event["source"] for event in state.events] == ["video", "synthetic"]
-    assert state.events[1]["minute"] == state.events[0]["minute"]
-    assert state.events[0]["t"] == 4.0
-    assert state.events[1]["t"] is None
-    assert state.frames[-1]["t"] == 0.0
-    assert state.score == {"Rovers": 1, "United": 1}
-    assert len(state.frames) == 2
-
-
-def test_fan_curator_filters_shots_on_target():
-    state = MatchState(events=[
-        _event("Rovers", "Rico Vale", "on_target"),
-        _event("Rovers", "Leo Vale", "off_target"),
-        _event("United", "Ira West", "on_target"),
-    ])
-    result = FanCurator().query(state, "Rovers Rico Vale shots on target")
-    assert result["compiled_by"] == "code"
-    assert result["count"] == 1
-    assert result["clips"][0]["player"] == "Rico Vale"
-
-
-def test_fan_curator_parses_team_player_and_event_filters():
-    state = MatchState(events=[
-        _event("Rovers", "Rico Vale", "on_target"),
-        _event("Rovers", "Rico Vale", "off_target"),
-        _event("United", "Ira West", "on_target"),
-    ])
-    result = FanCurator().query(state, "Rovers Rico Vale shots on target")
-    assert result["filters"] == {
-        "team": "Rovers",
-        "player": "Rico Vale",
-        "type": ["shot"],
-        "outcome": ["on_target", "goal"],
-    }
-    assert result["count"] == 1
-
-
-def test_fan_curator_rejects_unlisted_structured_filters():
-    state = MatchState(events=[_event("Rovers", "Rico Vale", "goal")])
-    curator = FanCurator(agent=_FakeAgent('{"team":"Invented FC","type":["shot"]}'))
-
-    result = asyncio.run(curator.query_async(state, "show me tactical sequences"))
-
-    assert result["filters"] == {}
-    assert result["count"] == 0
-    assert result["compiled_by"] == "code"
-    assert result["fallback_reason"]
-
-
-def test_fan_curator_accepts_schema_validated_filters():
-    state = MatchState(events=[_event("Rovers", "Rico Vale", "goal")])
-    curator = FanCurator(
-        agent=_FakeAgent('{"team":"Rovers","type":["shot"],"outcome":["goal"]}')
-    )
-
-    result = asyncio.run(curator.query_async(state, "show me decisive moments"))
-
-    assert result["compiled_by"] == "agent_framework"
-    assert result["count"] == 1
-    assert result["filters"]["team"] == "Rovers"
+    engine.run([dataset])
+    assert [event["source"] for event in state.events] == ["synthetic"]
+    assert "clip_id" not in state.events[0]
+    assert state.score == {"Rovers": 1, "United": 0}
+    assert len(state.frames) == 1
+    assert state.frames[0]["players"][0]["shirt"] == 6
+    assert state.frames[0]["players"][0]["name"] == "Rico Vale"
 
 
 def test_narrator_uses_templated_fallback_after_timeout():
@@ -291,18 +248,30 @@ def test_narrator_cache_separates_mode_language_and_favourite():
             favourite_team="Rovers",
         )
         rival = await narrator.narrate(state, favourite_team="United")
-        return [first, repeated, analyst, spanish, rival]
+        neutral = await narrator.narrate(state)
+        neutral_again = await narrator.narrate(state, favourite_team="Neutral")
+        return [first, repeated, analyst, spanish, rival, neutral, neutral_again]
 
     results = asyncio.run(run())
-    assert agent.calls == 4
+    assert agent.calls == 5
     assert results[0]["text"] == results[1]["text"]
     assert results[0]["fact_id"] == results[1]["fact_id"]
     assert len({result["mode"] for result in (results[0], results[2])}) == 2
     assert results[3]["language"] == "Spanish"
     assert results[4]["favourite_team"] == "United"
+    assert results[5]["favourite_team"] == "Neutral"
+    assert results[5]["text"] == results[6]["text"]
+    facts = Narrator._facts(state, "Neutral", None)
+    assert facts["team_focus"] == "Neutral"
+    neutral_template = Narrator._template(facts, "Fan", "English")
+    assert "come on" not in neutral_template.casefold()
 
 
-def test_orchestrator_keeps_deterministic_analysis_and_template_fallback():
+def test_orchestrator_keeps_deterministic_analysis_and_template_fallback(monkeypatch):
+    async def use_fallback(_agent, _prompt, *, fallback, **_kwargs):
+        return fallback
+
+    monkeypatch.setattr("agents.narrator.ask", use_fallback)
     state = MatchState()
     state.events = [_event("Rovers", "Rico Vale", "goal", minute=1)]
     state.frames = [
@@ -375,7 +344,6 @@ def test_replay_engine_emits_facts_before_narration():
     replay.run([
         ReplayDataset(
             name="single",
-            source="synthetic",
             events=[_event("Rovers", "Rico Vale", "goal")],
             frames=[{
                 "t": 0.0,

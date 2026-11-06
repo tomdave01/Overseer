@@ -32,9 +32,7 @@ def _event_time(event: dict[str, Any]) -> float:
     return float(event.get("minute", 0.0)) * 60.0
 
 
-def _source_time(record: dict[str, Any], source: str) -> float:
-    if source == "video" and record.get("t") is not None:
-        return float(record["t"])
+def _source_time(record: dict[str, Any]) -> float:
     return float(record.get("minute", 0.0)) * 60.0
 
 
@@ -206,8 +204,7 @@ def _nearest_frame(
     return min(
         candidates,
         key=lambda frame: abs(
-            _source_time(frame, source or str(frame.get("source", "synthetic")))
-            - timestamp
+            _source_time(frame) - timestamp
         ),
     )
 
@@ -264,7 +261,7 @@ def press_triggers(
             ):
                 continue
             source = str(event.get("source", "synthetic"))
-            timestamp = _source_time(event, source)
+            timestamp = _source_time(event)
             target_frame = _nearest_frame(frame_list, timestamp + 2.0, source)
             trigger = _classify_lost_pass(event)
             samples[trigger].append(_press_success(target_frame, defending_team))
@@ -276,7 +273,7 @@ def press_triggers(
             if previous.get("poss") == current.get("poss") or current.get("poss") != defending_team:
                 continue
             source = str(current.get("source", "synthetic"))
-            timestamp = _source_time(current, source)
+            timestamp = _source_time(current)
             prior_frame = _nearest_frame(frame_list, timestamp - 2.0, source)
             ball = (prior_frame or previous).get("ball", {})
             later_ball = previous.get("ball", {})

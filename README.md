@@ -181,8 +181,8 @@ recorded as span attributes.
 
 ## Responsible AI and limitations
 
-- Match records are synthetic unless a separately configured upstream source
-  provides data. Synthetic output must not be presented as broadcast evidence.
+- Match records come exclusively from the synthetic generator and must not be
+  presented as broadcast evidence.
 - Narration is grounded in supplied facts and has a deterministic template
   fallback; generated narration can still be incomplete or misleading and
   should be reviewed before broadcast.

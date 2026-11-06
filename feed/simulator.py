@@ -1,40 +1,16 @@
-"""Publish processed clip data followed by a synthetic match to the feed."""
+"""Publish a generated synthetic match to the feed."""
 
 from __future__ import annotations
 
 import argparse
 import asyncio
-import json
 import os
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any, Sequence
 
 from feed.clients import FeedProducer, create_feed_producer
 from feed.models import FeedMessage, Source
 from generator.match import MATCH_ID, generate_match
-
-
-def _load_clip(
-    events_path: str | None, frames_path: str | None
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]] | None:
-    if bool(events_path) != bool(frames_path):
-        raise ValueError(
-            "SIMULATOR_CLIP_EVENTS_PATH and SIMULATOR_CLIP_FRAMES_PATH "
-            "must be configured together"
-        )
-    if not events_path or not frames_path:
-        return None
-    try:
-        events = json.loads(Path(events_path).read_text(encoding="utf-8"))
-        frames = json.loads(Path(frames_path).read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
-        raise RuntimeError(f"Unable to load processed clip data: {error}") from error
-    if not isinstance(events, list) or not isinstance(frames, list):
-        raise ValueError("Processed clip events and frames must be JSON arrays")
-    if not all(isinstance(item, dict) for item in [*events, *frames]):
-        raise ValueError("Processed clip records must be JSON objects")
-    return events, frames
 
 
 def _records(
@@ -79,32 +55,14 @@ async def simulate(
     speed: float = 1.0,
     seed: int = 42,
     match_id: str | None = None,
-    clip_events_path: str | None = None,
-    clip_frames_path: str | None = None,
 ) -> int:
     if speed <= 0:
         raise ValueError("speed must be greater than zero")
-    clip = _load_clip(clip_events_path, clip_frames_path)
-    datasets: list[
-        tuple[Source, list[dict[str, Any]], list[dict[str, Any]], str]
-    ] = []
-    if clip is not None:
-        events, frames = clip
-        clip_match_id = match_id or next(
-            (
-                str(event["match_id"])
-                for event in events
-                if event.get("match_id")
-            ),
-            "video-match",
-        )
-        datasets.append(("video", events, frames, clip_match_id))
-
     synthetic_events, synthetic_frames = generate_match(seed=seed)
     synthetic_match_id = match_id or MATCH_ID
-    datasets.append(
+    datasets = [
         ("synthetic", synthetic_events, synthetic_frames, synthetic_match_id)
-    )
+    ]
 
     sequences: dict[str, int] = {}
     clock_offsets: dict[str, float] = {}
@@ -158,14 +116,6 @@ async def _run(arguments: argparse.Namespace) -> None:
             speed=arguments.speed,
             seed=arguments.seed,
             match_id=arguments.match_id,
-            clip_events_path=(
-                arguments.clip_events
-                or os.getenv("SIMULATOR_CLIP_EVENTS_PATH")
-            ),
-            clip_frames_path=(
-                arguments.clip_frames
-                or os.getenv("SIMULATOR_CLIP_FRAMES_PATH")
-            ),
         )
         print(f"Published {count} feed messages.")
     finally:
@@ -181,12 +131,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         help="playback speed multiplier (default: 1)",
     )
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument(
-        "--match-id",
-        help="optional shared match ID for processed clip and synthetic records",
-    )
-    parser.add_argument("--clip-events", help="processed clip events JSON")
-    parser.add_argument("--clip-frames", help="processed clip frames JSON")
+    parser.add_argument("--match-id", help="optional match ID for synthetic records")
     arguments = parser.parse_args(argv)
     asyncio.run(_run(arguments))
 
