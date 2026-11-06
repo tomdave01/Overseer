@@ -45,6 +45,7 @@ class Narrator:
         self.agent = agent
         self.cache = cache or InMemoryNarrationCache()
         self.timeout_seconds = timeout_seconds
+        self._recap_results: dict[str, dict[str, Any]] = {}
 
     def _get_agent(self) -> Any:
         if self.agent is None:
@@ -174,6 +175,226 @@ class Narrator:
         if len(state.narration_log) > 500:
             del state.narration_log[:-500]
         return entry
+
+    async def narrate_recap(
+        self,
+        facts: dict[str, Any],
+        *,
+        recap_type: str,
+        mode: str = "Broadcast",
+        language: str = "English",
+        favourite_team: str | None = "Neutral",
+    ) -> dict[str, Any]:
+        if mode not in SUPPORTED_MODES:
+            raise ValueError(f"Unsupported narration mode: {mode}")
+        if language not in SUPPORTED_LANGUAGES:
+            raise ValueError(f"Unsupported narration language: {language}")
+        if favourite_team not in FAVOURITE_TEAMS:
+            favourite_team = "Neutral"
+        if recap_type not in {"current", "halftime", "full_time"}:
+            raise ValueError(f"Unsupported recap type: {recap_type}")
+        fact_id = hashlib.sha256(
+            json.dumps(
+                [recap_type, facts],
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        result_key = json.dumps(
+            [fact_id, mode, language, favourite_team],
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        cached_result = self._recap_results.get(result_key)
+        if cached_result is not None:
+            return dict(cached_result)
+
+        fallback = self._recap_template(
+            facts,
+            recap_type=recap_type,
+            mode=mode,
+            language=language,
+            favourite_team=favourite_team,
+        )
+        cached_text = await self.cache.get(
+            fact_id,
+            mode,
+            language,
+            favourite_team,
+        )
+        if cached_text is not None:
+            result = {
+                "recap_type": recap_type,
+                "text": cached_text,
+                "facts": facts,
+                "fact_id": fact_id,
+                "mode": mode,
+                "language": language,
+                "favourite_team": favourite_team,
+                "fallback": False,
+                "reason": None,
+            }
+            self._recap_results[result_key] = result
+            return dict(result)
+        prompt = json.dumps(
+            {
+                "task": "Write a concise match recap using only the supplied facts.",
+                "recap_type": recap_type,
+                "mode": mode,
+                "language": language,
+                "favourite_team": favourite_team,
+                "facts": facts,
+            },
+            ensure_ascii=False,
+        )
+        text, fallback_used, reason = await self._generate(
+            prompt,
+            fallback,
+            fact_id=fact_id,
+        )
+        if not fallback_used:
+            await self.cache.put(
+                fact_id,
+                mode,
+                language,
+                favourite_team,
+                text,
+            )
+        result = {
+            "recap_type": recap_type,
+            "text": text,
+            "facts": facts,
+            "fact_id": fact_id,
+            "mode": mode,
+            "language": language,
+            "favourite_team": favourite_team,
+            "fallback": fallback_used,
+            "reason": reason,
+        }
+        self._recap_results[result_key] = result
+        return dict(result)
+
+    @staticmethod
+    def _recap_template(
+        facts: dict[str, Any],
+        *,
+        recap_type: str,
+        mode: str,
+        language: str,
+        favourite_team: str,
+    ) -> str:
+        score = facts.get("score", {})
+        score_text = (
+            f"Rovers {score.get('Rovers', 0)}-{score.get('United', 0)} United"
+        )
+        minute = float(facts.get("minute", 0.0))
+        top = facts.get("top_influencers", [])
+        leader = top[0].get("player") if top else None
+        moments = facts.get("key_moments", [])
+        latest_goal = next(
+            (moment for moment in reversed(moments) if moment.get("type") == "goal"),
+            None,
+        )
+        team = favourite_team if favourite_team in {"Rovers", "United"} else "Neutral"
+        top_score = float(top[0].get("score", 0.0)) if top else 0.0
+        if language == "Spanish":
+            prefix = "Resumen del descanso" if recap_type == "halftime" else "Resumen del partido"
+            if mode == "Analyst":
+                subject = (
+                    f"{leader} lideró el impacto medido ({top_score:.1f})."
+                    if leader
+                    else "Aún no hay un líder de impacto medido."
+                )
+            elif latest_goal:
+                subject = (
+                    f"{latest_goal.get('player', 'Un jugador')} marcó para "
+                    f"{latest_goal.get('team')}."
+                )
+            elif leader:
+                subject = f"{leader} lidera el impacto medido."
+            else:
+                subject = "El partido sigue equilibrado."
+            perspective = (
+                f" Desde la perspectiva de {team}."
+                if mode == "Fan" and team != "Neutral"
+                else " Desde una perspectiva neutral."
+                if mode == "Fan"
+                else ""
+            )
+            return f"{prefix}: {subject} {score_text}. Minuto {minute:.0f}.{perspective}"
+        if language == "French":
+            prefix = "Résumé de la mi-temps" if recap_type == "halftime" else "Résumé du match"
+            if mode == "Analyst":
+                subject = (
+                    f"{leader} mène l'impact mesuré ({top_score:.1f})."
+                    if leader
+                    else "Aucun leader d'impact mesuré ne se dégage encore."
+                )
+            elif latest_goal:
+                subject = (
+                    f"{latest_goal.get('player', 'Un joueur')} a marqué pour "
+                    f"{latest_goal.get('team')}."
+                )
+            elif leader:
+                subject = f"{leader} mène l'impact mesuré."
+            else:
+                subject = "Le match reste disputé."
+            perspective = (
+                f" Du côté de {team}."
+                if mode == "Fan" and team != "Neutral"
+                else " Dans une perspective neutre."
+                if mode == "Fan"
+                else ""
+            )
+            return f"{prefix} : {subject} {score_text}. {minute:.0f}e minute.{perspective}"
+        if language == "Arabic":
+            prefix = "ملخص الشوط الأول" if recap_type == "halftime" else "ملخص المباراة"
+            if mode == "Analyst":
+                subject = (
+                    f"{leader} يتصدر التأثير المقاس ({top_score:.1f})."
+                    if leader
+                    else "لم يتحدد لاعب متصدر للتأثير بعد."
+                )
+            elif latest_goal:
+                subject = (
+                    f"{latest_goal.get('player', 'لاعب')} سجل لـ "
+                    f"{latest_goal.get('team')}."
+                )
+            elif leader:
+                subject = f"{leader} يتصدر التأثير المقاس."
+            else:
+                subject = "المباراة متوازنة."
+            perspective = (
+                f" من منظور {team}."
+                if mode == "Fan" and team != "Neutral"
+                else " من منظور محايد."
+                if mode == "Fan"
+                else ""
+            )
+            return f"{prefix}: {subject} {score_text}. الدقيقة {minute:.0f}.{perspective}"
+
+        prefix = "Half-time recap" if recap_type == "halftime" else "Match recap"
+        if mode == "Analyst":
+            subject = (
+                f"{leader} led the measured impact ({top_score:.1f})."
+                if leader
+                else "No player impact leader has been established yet."
+            )
+        elif latest_goal:
+            subject = (
+                f"{latest_goal.get('player', 'A player')} scored for "
+                f"{latest_goal.get('team')}."
+            )
+        elif leader:
+            subject = f"{leader} led the measured impact."
+        else:
+            subject = "The match remained closely contested."
+        if mode == "Fan" and team != "Neutral":
+            subject = f"{subject} From {team}'s perspective."
+        elif mode == "Fan":
+            subject = f"{subject} In a balanced view."
+        return f"{prefix}: {subject} {score_text} at {minute:.0f} minutes."
 
     async def _generate(
         self,

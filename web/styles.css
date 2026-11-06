@@ -110,10 +110,20 @@ h2 { margin: 4px 0 0; font: 650 15px var(--display); letter-spacing: -.02em; }
 .team-insight span { color: #a9b5aa; }
 .pattern-line { padding: 3px 0; border-top: 1px solid #232c25; }
 .pattern-line:first-child { border-top: 0; }
-.impact-row { display: grid; grid-template-columns: 1fr 1fr 35px; gap: 7px; align-items: center; padding: 3px 0; }
+.impact-table { max-height: 340px; overflow: auto; }
+.impact-columns, .impact-row { display: grid; grid-template-columns: minmax(75px, 1fr) minmax(75px, 1fr) 37px; gap: 7px; align-items: center; }
+.impact-columns { position: sticky; top: 0; padding: 4px 0; background: #111712; color: #708077; font: 7px var(--mono); }
+.impact-entry { padding: 4px 0; border-top: 1px solid #232c25; }
+.impact-row { padding: 2px 0; }
+.impact-name { display: grid; min-width: 0; }
+.impact-name b { overflow: hidden; color: #dce8d9; font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
+.impact-name small { color: #708077; font: 7px var(--mono); }
+.impact-measure { display: grid; grid-template-columns: minmax(20px, 1fr) 28px; gap: 5px; align-items: center; }
 .impact-bar { height: 3px; background: #273328; border-radius: 5px; }
 .impact-bar i { display: block; height: 100%; background: var(--green); border-radius: 5px; }
 .impact-score { text-align: right; color: var(--green); font: 8px var(--mono); }
+.impact-gravity { text-align: right; color: #efbd87; font: 8px var(--mono); }
+.impact-details { display: block; padding: 2px 0 0; color: #829087; font: 7px/1.5 var(--mono); }
 .momentum-panel { padding-bottom: 9px; }
 .chart-key { color: #89968c; font: 8px var(--mono); }.chart-key i { display: inline-block; width: 6px; height: 6px; margin-right: 4px; background: var(--green); border-radius: 50%; }
 #momentum-chart { display: block; width: calc(100% - 24px); height: 112px; margin: 0 12px; }

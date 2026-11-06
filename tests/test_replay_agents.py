@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from agents import Orchestrator
 from agents.framework_agents import build_agent_suite, build_analysis_tools
 from agents.narrator import Narrator
+from agents.analysis_tools import ImpactAnalysisTool
 from engine.replay import ReplayDataset, ReplayEngine
 from engine.state import MatchState, ingest
 from feed.persistence import InMemoryNarrationCache
@@ -82,6 +83,20 @@ def test_analysis_snapshot_is_detached_and_windowed():
     assert [event["player"] for event in snapshot.events] == ["Changed"]
     assert state.frames[1]["ball"]["x"] == 2
     assert len(snapshot.frames) == 1
+
+
+def test_impact_analysis_includes_all_22_roster_players_before_events():
+    state = MatchState()
+
+    result = ImpactAnalysisTool().analyze(state)
+
+    assert len(result["impact"]) == 22
+    assert {player["team"] for player in result["impact"]} == {
+        "Rovers",
+        "United",
+    }
+    assert all(player["score"] == 0.0 for player in result["impact"])
+    assert all("gravity_index" in player for player in result["impact"])
 
 
 def test_replay_processes_only_synthetic_records(tmp_path):

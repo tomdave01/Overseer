@@ -70,6 +70,12 @@ class ControlRequest(BaseModel):
     favourite_player: str | None = Field(default=None, max_length=80)
 
 
+class RecapRequest(BaseModel):
+    mode: Literal["Broadcast", "Analyst", "Fan"] | None = None
+    language: Literal["English", "Spanish", "Arabic", "French"] | None = None
+    favourite_team: Literal["Rovers", "United", "Neutral"] | None = None
+
+
 class ReplayManager:
     def __init__(self) -> None:
         self.state = MatchState()
@@ -132,6 +138,8 @@ class ReplayManager:
         self.overlays = OverlayHistory()
         self._last_record_wall_time = datetime.now(timezone.utc)
         self.overlay_latency_ms: float | None = None
+        self._scheduled_recap_phases: set[str] = set()
+        self.recap_results: dict[str, dict[str, Any]] = {}
         self.webpubsub_sink: OverlaySink | None = WebPubSubOverlaySink.from_environment()
         self._display_snapshot = self.compact_snapshot()
 
@@ -705,6 +713,12 @@ class ReplayManager:
         event_wall_time = self._last_record_wall_time
         self._ensure_fact_consumer()
         self._queue_stream_snapshot(self.compact_snapshot(), message.match_clock)
+        if (
+            message.match_clock >= 45 * 60
+            and "halftime" not in self._scheduled_recap_phases
+        ):
+            self._scheduled_recap_phases.add("halftime")
+            self._schedule_automatic_recap("halftime")
         is_goal = (
             message.kind == "event"
             and record.get("type") == "shot"
@@ -933,6 +947,8 @@ class ReplayManager:
         self.display_clock = 0.0
         self._last_analysis_clock = -self.analysis_tick_seconds
         self.agent_answers.clear()
+        self._scheduled_recap_phases.clear()
+        self.recap_results.clear()
         self.delay_buffer.clear()
         self._display_snapshot = None
         self._pending_display_snapshot = None
@@ -982,6 +998,151 @@ class ReplayManager:
         self.match_clock = max(0.0, float(self.state.minute) * 60.0)
 
         self._queue_stream_snapshot(self.compact_snapshot(), self.match_clock)
+        if (
+            self.match_clock >= 45 * 60
+            and "halftime" not in self._scheduled_recap_phases
+            and self._loop is not None
+            and not self._loop.is_closed()
+        ):
+            self._scheduled_recap_phases.add("halftime")
+            self._loop.call_soon_threadsafe(
+                self._schedule_automatic_recap,
+                "halftime",
+            )
+
+    def _build_recap_facts(self, recap_type: str) -> dict[str, Any]:
+        state = self.state
+        moments = copy.deepcopy(state.moments)
+        goals_seen = {
+            (
+                moment.get("team"),
+                moment.get("player"),
+                round(float(moment.get("minute", 0.0)), 3),
+            )
+            for moment in moments
+            if moment.get("type") == "goal"
+        }
+        for event in state.events:
+            if event.get("type") != "shot" or event.get("outcome") != "goal":
+                continue
+            identity = (
+                event.get("team"),
+                event.get("player"),
+                round(float(event.get("minute", 0.0)), 3),
+            )
+            if identity not in goals_seen:
+                moments.append({
+                    "id": f"goal-{identity[0]}-{identity[2]:.3f}",
+                    "type": "goal",
+                    "team": identity[0],
+                    "player": identity[1],
+                    "minute": identity[2],
+                    "why": (
+                        f"{identity[1]} scored for {identity[0]}."
+                        if identity[1]
+                        else f"A goal was scored for {identity[0]}."
+                    ),
+                })
+                goals_seen.add(identity)
+        moments.sort(key=lambda moment: float(moment.get("minute", 0.0)))
+        players = self.stats.player_stats(
+            force_gravity_refresh=recap_type == "full_time"
+        )
+        top_influencers = sorted(
+            players,
+            key=lambda player: (
+                -float(player.get("impact_score", 0.0)),
+                player.get("team", ""),
+                player.get("name", ""),
+            ),
+        )[:5]
+        findings = copy.deepcopy(state.patterns.get("findings", {}))
+        block_changes = [
+            copy.deepcopy(change)
+            for change in state.shape.get("changes", [])
+            if change.get("id") == "block_change"
+        ]
+        block_change_keys = {
+            (
+                change.get("team"),
+                round(float(change.get("minute", 0.0)), 2),
+                change.get("to"),
+            )
+            for change in block_changes
+        }
+        for moment in moments:
+            if moment.get("type") != "block_change":
+                continue
+            identity = (
+                moment.get("team"),
+                round(float(moment.get("minute", 0.0)), 2),
+                moment.get("to"),
+            )
+            if identity not in block_change_keys:
+                block_changes.append(copy.deepcopy(moment))
+                block_change_keys.add(identity)
+        momentum_swings = [
+            copy.deepcopy(moment)
+            for moment in moments
+            if moment.get("type") == "momentum_swing"
+        ]
+        return {
+            "recap_type": recap_type,
+            "minute": round(state.minute, 2),
+            "score": dict(state.score),
+            "current_score": dict(state.score),
+            "final_score": (
+                dict(state.score) if recap_type == "full_time" else None
+            ),
+            "team_stats": self.stats.team_stats(),
+            "key_moments": [
+                {
+                    "id": moment.get("id"),
+                    "type": moment.get("type"),
+                    "minute": moment.get("minute"),
+                    "team": moment.get("team"),
+                    "player": moment.get("player"),
+                    "why": moment.get("why", ""),
+                }
+                for moment in moments[-20:]
+            ],
+            "top_influencers": [
+                {
+                    "team": player["team"],
+                    "player": player["name"],
+                    "score": player["impact_score"],
+                    "components": player["impact_components"],
+                }
+                for player in top_influencers
+            ],
+            "notable_patterns": findings,
+            "block_changes": block_changes[-10:],
+            "momentum_swings": momentum_swings[-10:],
+        }
+
+    async def generate_recap(
+        self,
+        recap_type: str = "current",
+        *,
+        settings: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        selected = settings or self.settings()
+        facts = await asyncio.to_thread(self._build_recap_facts, recap_type)
+        recap = await self.orchestrator.narrator.narrate_recap(
+            facts,
+            recap_type=recap_type,
+            mode=selected["mode"],
+            language=selected["language"],
+            favourite_team=selected["favourite_team"],
+        )
+        with self._lock:
+            self.recap_results[recap_type] = copy.deepcopy(recap)
+        return recap
+
+    def _schedule_automatic_recap(self, recap_type: str) -> None:
+        task = asyncio.create_task(self.generate_recap(recap_type))
+        self._agent_tasks.add(task)
+        task.add_done_callback(self._finish_narration_task)
 
     async def _run_worker(self) -> None:
         try:
@@ -992,6 +1153,15 @@ class ReplayManager:
             await asyncio.to_thread(engine.run, datasets, **self.settings())
             with self._lock:
                 self.status = "stopped" if self._stop_event and self._stop_event.is_set() else "complete"
+            if self.status == "complete":
+                try:
+                    await self.generate_recap("full_time")
+                except Exception as error:
+                    logger.error(
+                        "Full-time recap generation failed (%s)",
+                        error.__class__.__name__,
+                        exc_info=(type(error), error, error.__traceback__),
+                    )
             if self.status == "complete" and self.stream_delay_seconds:
                 await asyncio.sleep(self.stream_delay_seconds / self.speed)
             if self.status == "complete":
@@ -1244,6 +1414,28 @@ async def get_commentary(
     since: int | None = Query(default=None, ge=0),
 ) -> list[dict[str, Any]]:
     return manager.commentary_history.recent(limit=limit, since=since)
+
+
+@app.get("/recap")
+async def get_recap(
+    recap_type: Literal["current", "halftime", "full_time"] = "current",
+) -> dict[str, Any]:
+    with manager._lock:
+        existing = manager.recap_results.get(recap_type)
+        if existing is not None:
+            return copy.deepcopy(existing)
+    return await manager.generate_recap(recap_type)
+
+
+@app.post("/recap/generate")
+async def generate_recap(data: RecapRequest | None = None) -> dict[str, Any]:
+    selected = manager.settings()
+    if data is not None:
+        for field in ("mode", "language", "favourite_team"):
+            value = getattr(data, field)
+            if value is not None:
+                selected[field] = value
+    return await manager.generate_recap("current", settings=selected)
 
 
 @app.get("/state")

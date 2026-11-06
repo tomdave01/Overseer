@@ -47,6 +47,56 @@ def test_favourite_club_defaults_to_neutral():
     assert ReplayManager().favourite_team == "Neutral"
 
 
+def test_replay_schedules_halftime_recap_once():
+    async def run() -> list[str]:
+        replay = ReplayManager()
+        replay._loop = asyncio.get_running_loop()
+        replay.state.minute = 45.0
+        replay._queue_stream_snapshot = lambda *_args: None
+        scheduled: list[str] = []
+
+        async def generate_recap(recap_type: str) -> None:
+            scheduled.append(recap_type)
+
+        replay.generate_recap = generate_recap
+        record = {
+            "type": "pass",
+            "team": "Rovers",
+            "player": "Rico Vale",
+            "outcome": "complete",
+            "minute": 45.0,
+        }
+        replay._on_replay_record("event", record)
+        replay._on_replay_record("event", record)
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        return scheduled
+
+    assert asyncio.run(run()) == ["halftime"]
+
+
+def test_replay_generates_full_time_recap_after_completion(monkeypatch):
+    replay = ReplayManager()
+    replay.stream_delay_seconds = 0
+    recap_types: list[str] = []
+
+    class FinishedEngine:
+        def run(self, _datasets, **_settings) -> None:
+            replay.state.minute = 90.0
+
+    async def generate_recap(recap_type: str) -> None:
+        recap_types.append(recap_type)
+
+    replay._engine = FinishedEngine()
+    replay.generate_recap = generate_recap
+    monkeypatch.setattr("api.main.default_datasets", lambda: [])
+
+    asyncio.run(replay._run_worker())
+
+    assert replay.status == "complete"
+    assert recap_types == ["full_time"]
+
+
 def test_stream_snapshots_wait_for_display_clock_and_late_overlays_are_marked():
     async def run() -> tuple[ReplayManager, dict]:
         replay = ReplayManager()

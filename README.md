@@ -52,6 +52,8 @@ use API keys.
 | Agent Framework and Foundry client | Working | Agent Framework agents use the Foundry chat client and `DefaultAzureCredential` |
 | Concurrent analysis and narration | Working | Four analysts process immutable snapshots concurrently; only flagged facts reach the Narrator |
 | Delayed stream and commentary history | Working | Stream output is delayed by eight match-seconds by default; commentary history is bounded to 500 items |
+| All-player impact and gravity | Working | `/stats/players` and the Impact analyst include all 22 players, impact components, nearby-opponent pressure, convergence, and normalized gravity index |
+| Match recaps | Working | Deterministic recap facts feed multilingual Broadcast/Analyst/Fan narration; halftime and full-time recaps are generated automatically during replay |
 | In-memory feed and replay | Working | Synthetic replay is supported; runtime state is process-local |
 | SSE overlays and dashboard latency | Working | Overlay JSON contains event-to-emission latency; dashboard displays it |
 | Azure Monitor tracing | Working when configured | Set `APPLICATIONINSIGHTS_CONNECTION_STRING`; otherwise the app warns and continues |
@@ -191,6 +193,28 @@ configuration produces a warning and does not prevent the service from
 starting. Agent spans are named `agent.<name>` and include `agent.name`,
 `fact.ids`, and `agent.latency_ms`. Raw prompts and connection strings are not
 recorded as span attributes.
+
+## Player gravity and match recaps
+
+`GET /stats/players` returns all 22 roster entries, including players with no
+event contributions yet. Each entry includes an impact score and its
+involvement, shots-created, defensive-actions, and momentum-while-on-ball
+components. Gravity reports average nearby outfield opponents with and without
+the ball, plus convergence (pull) values for both situations. Tracking
+coordinates are normalized to the 0–100 pitch scale: nearby means within 10
+coordinate units. The 0–100 gravity index normalizes each player's average
+nearby-opponent count against the highest player value in that match.
+
+`POST /recap/generate` accepts optional `mode`, `language`, and
+`favourite_team` fields; omitted values use the current dashboard preferences.
+The response contains the generated text, its deterministic fact bundle, and
+fallback metadata. `GET /recap` returns the current recap, while
+`GET /recap?recap_type=halftime` and `GET /recap?recap_type=full_time` retrieve
+the automatic replay recaps (or generate one if that phase is not yet cached).
+The deterministic bundle includes the score, team statistics, key moments and
+explanations, top influencers and component scores, patterns, block changes,
+and momentum swings. Only this bundle is sent to the Narrator. Replay triggers
+the halftime recap on reaching minute 45 and the full-time recap on completion.
 
 ## Responsible AI and limitations
 

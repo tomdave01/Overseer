@@ -15,6 +15,10 @@
     shape: {},
     patterns: {},
     impact: [],
+    playerStats: [],
+    playerStatsError: null,
+    lastPlayerStatsAt: 0,
+    playerStatsRequest: null,
     momentum: [],
     moments: [],
     overlays: [],
@@ -284,18 +288,55 @@
     }).join("");
   }
 
-  function renderImpact(impact) {
+  function renderImpact(players) {
     const container = $("#impact-card");
-    if (!impact || !impact.length) {
+    if (state.playerStatsError) {
+      container.innerHTML = `<p class="muted">Player stats unavailable: ${escapeHtml(state.playerStatsError)}</p>`;
+      return;
+    }
+    if (!players || !players.length) {
       container.innerHTML = '<p class="muted">Waiting for match data…</p>';
       return;
     }
-    const top = impact.slice(0, 5);
-    container.innerHTML = top.map((player) => `<div class="impact-row">
-      <span>${escapeHtml(player.player)}</span>
-      <span class="impact-bar"><i style="width:${Math.max(0, Math.min(100, player.score))}%"></i></span>
-      <span class="impact-score">${Number(player.score).toFixed(0)}</span>
-    </div>`).join("");
+    const ordered = [...players].sort((left, right) =>
+      Number(right.impact_score || 0) - Number(left.impact_score || 0)
+    );
+    const metric = (value) => Number(value || 0).toFixed(1);
+    container.innerHTML = `<div class="impact-table">
+      <div class="impact-columns"><span>PLAYER</span><span>IMPACT</span><span>GRAVITY</span></div>
+      ${ordered.map((player) => {
+        const score = Math.max(0, Math.min(100, Number(player.impact_score || 0)));
+        const components = player.impact_components || {};
+        return `<div class="impact-entry">
+          <div class="impact-row">
+            <span class="impact-name"><b>${escapeHtml(player.name)}</b><small>${escapeHtml(player.team)}</small></span>
+            <span class="impact-measure"><span class="impact-bar"><i style="width:${score}%"></i></span><b class="impact-score">${score.toFixed(1)}</b></span>
+            <span class="impact-gravity">${metric(player.gravity_index)}</span>
+          </div>
+          <small class="impact-details">Components: INV ${metric(components.involvement)} · SHOT ${metric(components.shots_created)} · DEF ${metric(components.defensive_actions)} · MOM ${metric(components.momentum_while_on_ball)}<br>
+            Gravity: near ${metric(player.gravity_with_ball)}/${metric(player.gravity_without_ball)} · pull ${metric(player.gravity_pull_with_ball)}/${metric(player.gravity_pull_without_ball)}
+          </small>
+        </div>`;
+      }).join("")}
+    </div>`;
+  }
+
+  async function refreshPlayerStats() {
+    if (state.playerStatsRequest || Date.now() - state.lastPlayerStatsAt < 10000) return;
+    state.lastPlayerStatsAt = Date.now();
+    state.playerStatsRequest = api("/stats/players");
+    try {
+      const result = await state.playerStatsRequest;
+      state.playerStats = result.players || [];
+      state.playerStatsError = null;
+      renderImpact(state.playerStats);
+    } catch (error) {
+      state.playerStatsError = error.message;
+      renderImpact(state.playerStats);
+      console.error("Could not load player stats", error);
+    } finally {
+      state.playerStatsRequest = null;
+    }
   }
 
   function renderOverlay(overlay) {
@@ -347,7 +388,8 @@
     if (snapshot.moments) state.moments = snapshot.moments;
     renderShape(state.shape);
     renderPatterns(state.patterns);
-    renderImpact(state.impact);
+    renderImpact(state.playerStats);
+    void refreshPlayerStats();
     renderMoments(state.moments);
     renderEvents();
     drawPitch();

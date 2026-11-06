@@ -79,8 +79,36 @@ def test_stats_aggregate_handmade_events_and_smoothed_frame_metrics():
     ):
         aggregator.add_frame(frame)
 
-    player = aggregator.player_stats(team="Rovers")[0]
-    assert player == {
+    player = next(
+        player
+        for player in aggregator.player_stats(team="Rovers")
+        if player["name"] == "Rico Vale"
+    )
+    assert {
+        key: player[key]
+        for key in (
+            "team",
+            "role",
+            "shirt",
+            "name",
+            "short_name",
+            "touches",
+            "passes_attempted",
+            "passes_completed",
+            "pass_accuracy_pct",
+            "shots",
+            "shots_on_target",
+            "goals",
+            "tackles_won",
+            "tackles_lost",
+            "pressures",
+            "fouls",
+            "turnovers_lost",
+            "distance_covered_metres",
+            "top_speed_kmh",
+            "minutes_on_pitch",
+        )
+    } == {
         "team": "Rovers",
         "role": "MID",
         "shirt": 6,
@@ -102,6 +130,14 @@ def test_stats_aggregate_handmade_events_and_smoothed_frame_metrics():
         "top_speed_kmh": 36.0,
         "minutes_on_pitch": 0.03,
     }
+    assert player["impact_score"] >= 0.0
+    assert set(player["impact_components"]) == {
+        "involvement",
+        "shots_created",
+        "defensive_actions",
+        "momentum_while_on_ball",
+    }
+    assert player["gravity_index"] == 0.0
     rovers = aggregator.team_stats()["Rovers"]
     assert rovers["possession_pct"] == 50.0
     assert rovers["passes_attempted"] == 2
@@ -130,10 +166,41 @@ def test_stats_endpoints_return_latest_snapshot_and_filter_by_team():
             invalid_team = client.get("/stats/players?team=Neutral")
         assert players.status_code == 200
         assert players.json()["minute"] == 3.0
-        assert players.json()["players"][0]["name"] == "Rico Vale"
+        assert any(
+            player["name"] == "Rico Vale"
+            for player in players.json()["players"]
+        )
+        assert len(players.json()["players"]) == 11
         assert teams.status_code == 200
         assert list(teams.json()["teams"]) == ["United"]
         assert invalid_team.status_code == 422
     finally:
         manager.state = original_state
         manager.stats = original_stats
+
+
+def test_stats_reports_impact_and_gravity_for_all_22_roster_players():
+    aggregator = StatsAggregator()
+    players = []
+    for team, squad in _roster().items():
+        for index, item in enumerate(squad):
+            players.append({
+                **item,
+                "team": team,
+                "x": 20.0 + index * 2.0,
+                "y": 20.0 + index * 3.0,
+            })
+    aggregator.add_frame({
+        "t": 0.0,
+        "minute": 0.0,
+        "poss": "Rovers",
+        "ball": {"x": 50.0, "y": 50.0},
+        "players": players,
+    })
+
+    stats = aggregator.player_stats()
+    assert len(stats) == 22
+    assert {player["team"] for player in stats} == {"Rovers", "United"}
+    assert all("impact_components" in player for player in stats)
+    assert all("gravity_index" in player for player in stats)
+    assert all(0.0 <= player["gravity_index"] <= 100.0 for player in stats)

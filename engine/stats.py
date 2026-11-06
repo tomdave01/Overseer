@@ -7,7 +7,9 @@ from math import hypot
 from threading import RLock
 from typing import Any
 
-from engine.patterns import block, flank_use, momentum, shape
+from engine.gravity import player_gravity
+from engine.patterns import block, flank_use, influence, momentum, shape
+from generator.match import player_metadata
 
 
 PITCH_LENGTH_METRES = 105.0
@@ -46,6 +48,16 @@ class StatsAggregator:
 
     def __init__(self) -> None:
         self._players: dict[tuple[str, str], dict[str, Any]] = {}
+        for metadata in player_metadata().values():
+            team = metadata["team"]
+            name = metadata["name"]
+            player = _new_player(team, name)
+            player.update({
+                "role": metadata["role"],
+                "shirt": metadata["shirt"],
+                "short_name": metadata["short_name"],
+            })
+            self._players[(team, name)] = player
         self._team_events: dict[str, Counter[str]] = {
             "Rovers": Counter(),
             "United": Counter(),
@@ -57,6 +69,10 @@ class StatsAggregator:
         self._last_frame: dict[str, Any] | None = None
         self._positions: dict[str, deque[tuple[float, float]]] = {}
         self._last_smoothed: dict[str, tuple[float, float, float]] = {}
+        self._frame_version = 0
+        self._gravity_version = -1
+        self._gravity_cache_time: float | None = None
+        self._gravity_cache: dict[tuple[str, str], dict[str, float]] = {}
         self._lock = RLock()
 
     def add_event(self, event: dict[str, Any]) -> None:
@@ -183,9 +199,44 @@ class StatsAggregator:
 
             self._last_frame = dict(frame)
             self._frames.append(dict(frame))
+            self._frame_version += 1
 
-    def player_stats(self, team: str | None = None) -> list[dict[str, Any]]:
+    def player_stats(
+        self,
+        team: str | None = None,
+        *,
+        force_gravity_refresh: bool = False,
+    ) -> list[dict[str, Any]]:
         with self._lock:
+            impact_by_player = {
+                (item["team"], item["player"]): item
+                for item in influence(self._events)
+            }
+            latest_frame = self._frames[-1] if self._frames else None
+            latest_time = (
+                float(latest_frame.get("t"))
+                if latest_frame and latest_frame.get("t") is not None
+                else float(latest_frame.get("minute", 0.0)) * 60.0
+                if latest_frame
+                else None
+            )
+            refresh_gravity = (
+                force_gravity_refresh
+                or self._gravity_version < 0
+                or (
+                    self._gravity_version != self._frame_version
+                    and latest_time is not None
+                    and (
+                        self._gravity_cache_time is None
+                        or latest_time - self._gravity_cache_time >= 60.0
+                    )
+                )
+            )
+            if refresh_gravity:
+                self._gravity_cache = player_gravity(self._frames)
+                self._gravity_version = self._frame_version
+                self._gravity_cache_time = latest_time
+            gravity_by_player = self._gravity_cache
             players = [
                 {
                     **player,
@@ -194,6 +245,36 @@ class StatsAggregator:
                     ),
                     "top_speed_kmh": round(player["top_speed_kmh"], 2),
                     "minutes_on_pitch": round(player["minutes_on_pitch"], 2),
+                    "impact_score": round(
+                        impact_by_player.get(
+                            (player["team"], player["name"]), {}
+                        ).get("score", 0.0),
+                        2,
+                    ),
+                    "impact_components": {
+                        "involvement": impact_by_player.get(
+                            (player["team"], player["name"]), {}
+                        ).get("involvement", 0.0),
+                        "shots_created": impact_by_player.get(
+                            (player["team"], player["name"]), {}
+                        ).get("shots_created", 0.0),
+                        "defensive_actions": impact_by_player.get(
+                            (player["team"], player["name"]), {}
+                        ).get("defensive_actions", 0.0),
+                        "momentum_while_on_ball": impact_by_player.get(
+                            (player["team"], player["name"]), {}
+                        ).get("team_momentum", 0.0),
+                    },
+                    **gravity_by_player.get(
+                        (player["team"], player["name"]),
+                        {
+                            "gravity_with_ball": 0.0,
+                            "gravity_without_ball": 0.0,
+                            "gravity_pull_with_ball": 0.0,
+                            "gravity_pull_without_ball": 0.0,
+                            "gravity_index": 0.0,
+                        },
+                    ),
                 }
                 for (player_team, _), player in sorted(self._players.items())
                 if team is None or player_team == team

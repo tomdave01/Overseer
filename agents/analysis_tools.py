@@ -15,7 +15,9 @@ from engine.patterns import (
     shape,
     turnover_zones,
 )
+from engine.gravity import player_gravity
 from engine.state import MatchState
+from generator.match import player_metadata
 
 
 ANALYSIS_WINDOW_MINUTES = 10.0
@@ -110,7 +112,48 @@ class ImpactAnalysisTool:
 
     def analyze(self, state: MatchState) -> dict[str, Any]:
         events = _window_events(state)
-        state.impact = influence(events)
+        impact = influence(events)
+        known = {(item["team"], item["player"]) for item in impact}
+        roster: dict[tuple[str, str], dict[str, Any]] = {
+            (metadata["team"], metadata["name"]): metadata
+            for metadata in player_metadata().values()
+        }
+        for frame in state.frames:
+            for player in frame.get("players", []):
+                key = (str(player.get("team") or ""), str(player.get("name") or player.get("id") or ""))
+                if key[0] in {"Rovers", "United"} and key[1]:
+                    roster[key] = player
+        for (team, name), player in roster.items():
+            if (team, name) in known:
+                continue
+            impact.append({
+                "team": team,
+                "player": name,
+                "score": 0.0,
+                "involvement": 0.0,
+                "shots_created": 0.0,
+                "defensive_actions": 0.0,
+                "team_momentum": 0.0,
+            })
+        gravity = player_gravity(state.frames)
+        for player in impact:
+            player["momentum_while_on_ball"] = player.pop("team_momentum")
+            player.update(
+                gravity.get(
+                    (player["team"], player["player"]),
+                    {
+                        "gravity_with_ball": 0.0,
+                        "gravity_without_ball": 0.0,
+                        "gravity_pull_with_ball": 0.0,
+                        "gravity_pull_without_ball": 0.0,
+                        "gravity_index": 0.0,
+                    },
+                )
+            )
+        state.impact = sorted(
+            impact,
+            key=lambda item: (-item["score"], item["team"], item["player"]),
+        )
         state.momentum_series = momentum(events)
         return {
             "impact": state.impact,
