@@ -27,6 +27,15 @@ def test_static_dashboard_and_state_route():
         assert snapshot.status_code == 200
         assert snapshot.json()["status"] == "idle"
         assert "frames" in snapshot.json()
+        assert snapshot.json()["stream_delay_seconds"] == manager.stream_delay_seconds
+        assert snapshot.json()["agents"]["ShapeAnalyst"]["status"] == "idle"
+        agent_status = client.get("/agents/status")
+        assert agent_status.status_code == 200
+        assert (
+            agent_status.json()["stream_delay_seconds"]
+            == manager.stream_delay_seconds
+        )
+        assert client.get("/commentary?limit=10").json() == []
         missing_frame = client.get("/frame?minute=1")
         assert missing_frame.status_code == 404
         assert client.get("/overlays/recent").json() == []
@@ -36,6 +45,59 @@ def test_static_dashboard_and_state_route():
 
 def test_favourite_club_defaults_to_neutral():
     assert ReplayManager().favourite_team == "Neutral"
+
+
+def test_stream_snapshots_wait_for_display_clock_and_late_overlays_are_marked():
+    async def run() -> tuple[ReplayManager, dict]:
+        replay = ReplayManager()
+        replay._loop = asyncio.get_running_loop()
+        replay.stream_delay_seconds = 8.0
+        replay._queue_stream_snapshot({"minute": 0.0, "frame": {"t": 5}}, 5.0)
+        assert replay._display_snapshot["frame"] is None
+        replay._queue_stream_snapshot({"minute": 0.2, "frame": {"t": 13}}, 13.0)
+        assert replay.display_clock == 5.0
+        assert replay._display_snapshot["frame"]["t"] == 5
+
+        replay.display_clock = 20.0
+        late = replay.overlays.create({
+            "type": "fact",
+            "match_id": "match-1",
+            "match_clock": 12.0,
+            "start_tc": "00:00:12.000",
+            "ingest_tc": "00:00:20.000",
+            "duration_ms": 8_000,
+            "priority": 50,
+            "mode": "Broadcast",
+            "language": "English",
+            "headline": "Momentum shift",
+            "body": "The pressure is changing.",
+            "source_agent": "ImpactAnalyst",
+        })
+        replay._publish_overlay(late)
+        await asyncio.sleep(0)
+        return replay, replay.overlays.recent()[0].model_dump(mode="json")
+
+    replay, overlay = asyncio.run(run())
+    assert replay.display_clock == 20.0
+    assert overlay["late"] is True
+    assert overlay["match_clock"] == 12.0
+
+
+def test_narration_queue_preserves_high_priority_goals_under_pressure():
+    replay = ReplayManager()
+    replay._narration_queue = asyncio.Queue(maxsize=1)
+    replay._enqueue_narration({
+        "priority": 30,
+        "flagged_moments": [{"id": "swing-1", "type": "momentum_swing"}],
+    })
+    replay._enqueue_narration({
+        "priority": 100,
+        "flagged_moments": [{"id": "goal-1", "type": "goal"}],
+    })
+
+    item = replay._narration_queue.get_nowait()
+    assert item["flagged_moments"][0]["id"] == "goal-1"
+    replay._narration_queue.task_done()
 
 
 def test_frame_lookup_uses_t_and_minute_for_synthetic_frames():
@@ -73,12 +135,15 @@ def test_frame_lookup_uses_t_and_minute_for_synthetic_frames():
 def test_fact_overlay_is_validated_and_available_to_late_joiners():
     original_state = manager.state
     original_history = manager.overlays
+    original_clock = manager.display_clock
+    original_delay = manager.stream_delay_seconds
     manager.state = MatchState(
         minute=2.0,
         score={"Rovers": 1, "United": 0},
         events=[{
             "match_id": "overlay-test",
             "player": "Rico Vale",
+            "minute": 2.0,
             "team": "Rovers",
             "x": 80.0,
             "y": 45.0,
@@ -93,11 +158,14 @@ def test_fact_overlay_is_validated_and_available_to_late_joiners():
                     "type": "goal",
                     "team": "Rovers",
                     "player": "Rico Vale",
+                    "minute": 125.25 / 60,
                     "why": "Rico Vale scored for Rovers.",
                 }]
             },
             match_clock=125.25,
         )
+        assert manager.overlays.recent() == []
+        manager._advance_display_clock(125.25)
         with TestClient(app) as client:
             response = client.get("/overlays/recent?limit=1")
 
@@ -108,17 +176,21 @@ def test_fact_overlay_is_validated_and_available_to_late_joiners():
         assert overlay["seq"] == 0
         assert overlay["match_clock"] == 125.25
         assert overlay["start_tc"] == "00:02:05.250"
+        assert overlay["ingest_tc"] == "00:02:05.250"
         assert overlay["source_agent"] == "MomentDetector"
         assert overlay["markings"][0]["kind"] == "spotlight"
     finally:
         manager.state = original_state
         manager.overlays = original_history
+        manager.display_clock = original_clock
+        manager.stream_delay_seconds = original_delay
 
 
 def test_flagged_fact_overlay_precedes_async_narration_and_includes_latency():
     async def run() -> list:
         replay = ReplayManager()
         replay._loop = asyncio.get_running_loop()
+        replay.stream_delay_seconds = 0
         published = []
         replay._publish_overlay = published.append
 
@@ -135,8 +207,29 @@ def test_flagged_fact_overlay_precedes_async_narration_and_includes_latency():
                     "fallback": False,
                 }
 
-        async def run_agents(*_args, **_kwargs) -> dict:
-            return {}
+        async def iter_analysis_tasks(
+            state,
+            *,
+            flagged_moments,
+            deadline_seconds,
+            on_task_created,
+        ):
+            task = {
+                "task_id": "moment-1",
+                "agent": "MomentDetector",
+                "window": {"start_minute": 0.0, "end_minute": state.minute},
+                "deadline": "deadline",
+                "created_at": "created",
+            }
+            on_task_created(task)
+            await asyncio.sleep(0)
+            yield {
+                "task": task,
+                "facts": flagged_moments,
+                "output_id": "moment-output",
+                "latency_ms": 10.0,
+                "state": state,
+            }
 
         replay.orchestrator = SimpleNamespace(
             analyze_facts=lambda _state: {
@@ -145,10 +238,11 @@ def test_flagged_fact_overlay_precedes_async_narration_and_includes_latency():
                     "type": "goal",
                     "team": "Rovers",
                     "player": "Rico Vale",
+                    "minute": 1.0,
                     "why": "Rico Vale scored for Rovers.",
                 }]
             },
-            run_routed_agents=run_agents,
+            iter_analysis_tasks=iter_analysis_tasks,
             narrator=DelayedNarrator(),
         )
         state = MatchState(
@@ -195,6 +289,7 @@ def test_feed_update_survives_missing_foundry_configuration(monkeypatch):
     async def run() -> list:
         replay = ReplayManager()
         replay._loop = asyncio.get_running_loop()
+        replay.stream_delay_seconds = 0
         state = MatchState()
         ingest(
             state,
@@ -228,11 +323,15 @@ def test_feed_update_survives_missing_foundry_configuration(monkeypatch):
 
         await replay.on_feed_update(message, state)
         assert [overlay.type for overlay in replay.overlays.recent()] == ["fact"]
-        await asyncio.sleep(0)
         await asyncio.wait_for(
             asyncio.gather(*tuple(replay._agent_tasks)),
             timeout=2,
         )
+        async def wait_for_narration() -> None:
+            while len(replay.overlays.recent()) < 2:
+                await asyncio.sleep(0.005)
+
+        await asyncio.wait_for(wait_for_narration(), timeout=2)
         return replay.overlays.recent()
 
     monkeypatch.delenv("FOUNDRY_PROJECT_ENDPOINT", raising=False)

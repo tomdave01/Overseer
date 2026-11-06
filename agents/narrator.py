@@ -171,6 +171,8 @@ class Narrator:
             "facts": facts,
         }
         state.narration_log.append(entry)
+        if len(state.narration_log) > 500:
+            del state.narration_log[:-500]
         return entry
 
     async def _generate(

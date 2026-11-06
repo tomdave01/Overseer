@@ -11,7 +11,7 @@ flowchart LR
     State["Shared MatchState"]
     Engine["Deterministic analysis tools"]
     Facts["Flagged facts"]
-    Fast["Immediate templated overlay"]
+    Fast["Fact template (delay buffered)"]
     Framework["Microsoft Agent Framework"]
     Foundry["Microsoft Foundry deployment"]
     Narration["Follow-up narration overlay"]
@@ -50,7 +50,8 @@ use API keys.
 | --- | --- | --- |
 | Deterministic analysis | Working | Existing engine functions remain deterministic and their tests are unchanged |
 | Agent Framework and Foundry client | Working | Agent Framework agents use the Foundry chat client and `DefaultAzureCredential` |
-| Fact-first overlays and async narration | Working | Flagged facts emit a template immediately; model calls run after emission |
+| Concurrent analysis and narration | Working | Four analysts process immutable snapshots concurrently; only flagged facts reach the Narrator |
+| Delayed stream and commentary history | Working | Stream output is delayed by eight match-seconds by default; commentary history is bounded to 500 items |
 | In-memory feed and replay | Working | Synthetic replay is supported; runtime state is process-local |
 | SSE overlays and dashboard latency | Working | Overlay JSON contains event-to-emission latency; dashboard displays it |
 | Azure Monitor tracing | Working when configured | Set `APPLICATIONINSIGHTS_CONNECTION_STRING`; otherwise the app warns and continues |
@@ -166,11 +167,23 @@ read raw events. Narration instructions require it to use only supplied facts,
 preserve player and club names, and follow the selected language and mode.
 
 When a deterministic analysis flags a fact, Overseer emits the templated fact
-overlay before scheduling narration and specialist-agent calls. No model call
-is made for an unflagged event. Model calls use bounded timeouts and fallback
-behavior so slow or unavailable Foundry does not block the feed. `latency_ms`
-in overlay JSON measures wall-clock time from input-event receipt to overlay
-creation; the dashboard shows the latest overlay latency.
+overlay before scheduling narration. Every three match-seconds by default,
+the four analyst roles create task records and run concurrently against
+detached match snapshots. Each task updates only its assigned state section
+and publishes structured results to a bounded fact queue; the Narrator consumes
+flagged facts without waiting for unrelated analysts. Unflagged events do not
+trigger model calls.
+
+Foundry calls are capped by `LLM_MAX_CONCURRENCY` (default `2`) and retry once
+with backoff after HTTP 429. `ANALYSIS_TICK_SECONDS` controls the analyst
+interval. `STREAM_DELAY_SECONDS` controls the display delay (default `8`);
+frames, events, and overlays are held until the delayed display clock reaches
+their match time. Overlay JSON carries both `start_tc` and `ingest_tc`, and
+late analyst results are retained with `late: true`. The dashboard displays
+the configured delay and average/maximum analyst latency. `GET /agents/status`
+returns current task and latency data; `GET /commentary?limit=&since=` returns
+the bounded, ordered commentary history. Narration caching is keyed by
+language, mode, favourite team, and fact ID.
 
 At application startup, Azure Monitor is configured once if
 `APPLICATIONINSIGHTS_CONNECTION_STRING` is populated. Missing or invalid

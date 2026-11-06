@@ -55,6 +55,8 @@ class Overlay(BaseModel):
     seq: int = Field(ge=0, strict=True)
     match_clock: float = Field(ge=0, allow_inf_nan=False, strict=True)
     start_tc: str = Field(pattern=r"^\d{2,}:\d{2}:\d{2}\.\d{3}$")
+    ingest_tc: str = Field(pattern=r"^\d{2,}:\d{2}:\d{2}\.\d{3}$")
+    late: bool = False
     duration_ms: int = Field(ge=250, le=120_000, strict=True)
     priority: int = Field(ge=0, le=100, strict=True)
     latency_ms: float | None = Field(default=None, ge=0, allow_inf_nan=False)
@@ -76,7 +78,7 @@ class Overlay(BaseModel):
             raise ValueError("must not be blank")
         return value
 
-    @field_validator("start_tc")
+    @field_validator("start_tc", "ingest_tc")
     @classmethod
     def validate_timecode_components(cls, value: str) -> str:
         _, minutes, seconds_milliseconds = value.split(":")
@@ -116,11 +118,34 @@ class OverlayHistory:
         self._seq = 0
 
     def add(self, data: dict[str, Any]) -> Overlay:
+        overlay = self.create(data)
+        self.publish(overlay)
+        return overlay
+
+    def create(self, data: dict[str, Any]) -> Overlay:
         with self._lock:
             overlay = Overlay.model_validate({**data, "seq": self._seq})
             self._seq += 1
-            self._items.append((overlay, time.monotonic() + overlay.duration_ms / 1000))
             return overlay
+
+    def publish(self, overlay: Overlay) -> None:
+        with self._lock:
+            self._items.append(
+                (overlay, time.monotonic() + overlay.duration_ms / 1000)
+            )
+
+    def mark_late(self, overlay: Overlay) -> Overlay:
+        late_overlay = overlay.model_copy(update={"late": True})
+        with self._lock:
+            self._items = deque(
+                (
+                    (late_overlay if item.overlay_id == overlay.overlay_id else item,
+                     expires_at)
+                    for item, expires_at in self._items
+                ),
+                maxlen=self._items.maxlen,
+            )
+        return late_overlay
 
     def recent(self, limit: int = 100) -> list[Overlay]:
         if not 1 <= limit <= 500:

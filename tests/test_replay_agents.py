@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
+import time
 from types import SimpleNamespace
 
 from agents import Orchestrator
@@ -57,6 +59,29 @@ def test_ingest_tracks_goals_minute_and_source():
     assert state.score == {"Rovers": 1, "United": 0}
     assert state.minute == 2
     assert state.source == "synthetic"
+
+
+def test_analysis_snapshot_is_detached_and_windowed():
+    state = MatchState(
+        minute=20.0,
+        events=[
+            {"minute": 1.0, "player": "Old"},
+            {"minute": 19.0, "player": "Recent"},
+        ],
+        frames=[
+            {"minute": 2.0, "ball": {"x": 1}},
+            {"minute": 18.0, "ball": {"x": 2}},
+        ],
+    )
+
+    snapshot = state.analysis_snapshot(window_minutes=5.0)
+    snapshot.events[0]["player"] = "Changed"
+    snapshot.frames[0]["ball"]["x"] = 99
+
+    assert [event["player"] for event in state.events] == ["Old", "Recent"]
+    assert [event["player"] for event in snapshot.events] == ["Changed"]
+    assert state.frames[1]["ball"]["x"] == 2
+    assert len(snapshot.frames) == 1
 
 
 def test_replay_processes_only_synthetic_records(tmp_path):
@@ -135,6 +160,107 @@ def test_ask_returns_fallback_on_timeout_and_agent_exception():
 
     assert timeout_result == "timeout fallback"
     assert error_result == "error fallback"
+
+
+def test_ask_respects_configured_concurrency_limit(monkeypatch):
+    monkeypatch.setenv("LLM_MAX_CONCURRENCY", "2")
+
+    class TrackedAgent:
+        active = 0
+        maximum = 0
+        lock = threading.Lock()
+
+        async def run(self, _prompt: str) -> str:
+            with self.lock:
+                self.active += 1
+                self.maximum = max(self.maximum, self.active)
+            await asyncio.sleep(0.03)
+            with self.lock:
+                self.active -= 1
+            return "ok"
+
+    async def run() -> list[str]:
+        agent = TrackedAgent()
+        results = await asyncio.gather(
+            *(ask(agent, f"prompt-{index}") for index in range(6))
+        )
+        assert agent.maximum == 2
+        return results
+
+    assert asyncio.run(run()) == ["ok"] * 6
+
+
+def test_ask_retries_http_429_once(monkeypatch):
+    monkeypatch.setenv("LLM_MAX_CONCURRENCY", "2")
+
+    class RateLimitError(Exception):
+        status_code = 429
+
+    class RateLimitedAgent:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def run(self, _prompt: str) -> str:
+            self.calls += 1
+            if self.calls == 1:
+                raise RateLimitError("rate limited")
+            return "recovered"
+
+    agent = RateLimitedAgent()
+    assert asyncio.run(ask(agent, "prompt")) == "recovered"
+    assert agent.calls == 2
+
+
+def test_analyst_tasks_run_concurrently_on_independent_snapshots(monkeypatch):
+    orchestrator = Orchestrator()
+    lock = threading.Lock()
+    active = 0
+    maximum = 0
+    snapshot_ids: set[int] = set()
+
+    def analyze(agent: str, section: str, snapshot: dict, flagged: list):
+        nonlocal active, maximum
+        with lock:
+            active += 1
+            maximum = max(maximum, active)
+            snapshot_ids.add(id(snapshot))
+        time.sleep(0.04)
+        with lock:
+            active -= 1
+        if section == "impact":
+            result = {"impact": [], "momentum_series": []}
+        elif section == "moments":
+            result = list(flagged)
+        else:
+            result = {"agent": agent}
+        return result, result
+
+    monkeypatch.setattr(orchestrator, "_analyze_task_section", analyze)
+    state = MatchState(minute=3.0)
+    flagged = [{"id": "goal-1", "type": "goal"}]
+
+    async def run() -> list[dict]:
+        return [
+            result
+            async for result in orchestrator.iter_analysis_tasks(
+                state,
+                flagged_moments=flagged,
+            )
+        ]
+
+    results = asyncio.run(run())
+    assert len(results) == 4
+    assert maximum > 1
+    assert len(snapshot_ids) == 4
+    assert all(
+        {"task_id", "agent", "window", "deadline", "created_at"}
+        <= result["task"].keys()
+        for result in results
+    )
+    assert state.shape == {"agent": "ShapeAnalyst"}
+    assert state.patterns == {"agent": "PatternSpotter"}
+    assert state.impact == []
+    assert state.moments == flagged
 
 
 def test_traced_agent_span_records_name_facts_and_latency(monkeypatch):

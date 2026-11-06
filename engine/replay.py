@@ -86,7 +86,7 @@ class ReplayEngine:
         orchestrator: Orchestrator | None = None,
         *,
         speed: float = 1.0,
-        tick_interval: float = 2.5,
+        tick_interval: float = 3.0,
         on_tick: TickCallback | None = None,
         on_fact: FactCallback | None = None,
         defer_model_calls: bool = False,
@@ -123,7 +123,7 @@ class ReplayEngine:
         dataset_list = list(datasets)
         if not dataset_list:
             raise ValueError("at least one replay dataset is required")
-        next_tick_minute = self.state.minute
+        next_tick_second = self.state.minute * 60.0
         last_timestamp: float | None = None
         timeline_offset = self.state.minute * 60.0
 
@@ -144,14 +144,15 @@ class ReplayEngine:
                 if self.on_record:
                     self.on_record(kind, value)
 
-                if self.state.minute >= next_tick_minute:
+                if timestamp >= next_tick_second:
                     self._tick(
                         mode=mode,
                         language=language,
                         favourite_team=favourite_team,
                         favourite_player=favourite_player,
                     )
-                    next_tick_minute = self.state.minute + self.tick_interval
+                    while next_tick_second <= timestamp:
+                        next_tick_second += self.tick_interval
 
             if records and not self.stop_event.is_set():
                 timeline_offset = max(timestamp for timestamp, _, _ in records)

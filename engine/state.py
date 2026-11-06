@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
@@ -25,6 +26,33 @@ class MatchState:
     def snapshot(self) -> dict[str, Any]:
         """Return a JSON-serializable snapshot detached from live state."""
         return asdict(self)
+
+    def analysis_snapshot(self, window_minutes: float = 10.0) -> MatchState:
+        """Copy the current analysis window without copying the full replay history."""
+        if window_minutes <= 0:
+            raise ValueError("window_minutes must be greater than zero")
+        lower_bound = self.minute - window_minutes
+        return MatchState(
+            minute=self.minute,
+            score=copy.deepcopy(self.score),
+            source=self.source,
+            events=copy.deepcopy([
+                event
+                for event in self.events
+                if float(event.get("minute", 0.0)) >= lower_bound
+            ]),
+            frames=copy.deepcopy([
+                frame
+                for frame in self.frames
+                if float(frame.get("minute", 0.0)) >= lower_bound
+            ]),
+            shape=copy.deepcopy(self.shape),
+            patterns=copy.deepcopy(self.patterns),
+            momentum_series=copy.deepcopy(self.momentum_series),
+            impact=copy.deepcopy(self.impact),
+            moments=copy.deepcopy(self.moments[-500:]),
+            narration_log=copy.deepcopy(self.narration_log[-500:]),
+        )
 
 
 def ingest(

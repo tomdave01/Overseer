@@ -208,6 +208,16 @@
     $("#latency-label").textContent = latency != null && Number.isFinite(Number(latency))
       ? `LATENCY ${Math.round(Number(latency))} MS`
       : "LATENCY —";
+    const delay = Number(data.stream_delay_seconds);
+    $("#delay-label").textContent = Number.isFinite(delay)
+      ? `DELAY ${delay.toFixed(delay % 1 ? 1 : 0)} S`
+      : "DELAY —";
+    const average = data.agent_latency_avg_ms == null ? NaN : Number(data.agent_latency_avg_ms);
+    const maximum = data.agent_latency_max_ms == null ? NaN : Number(data.agent_latency_max_ms);
+    const agents = Object.values(data.agents || {});
+    const working = agents.filter((agent) => agent.status === "working").length;
+    $("#agent-latency-label").textContent =
+      `AGENTS ${working}/4 · AVG ${Number.isFinite(average) ? Math.round(average) : "—"} / MAX ${Number.isFinite(maximum) ? Math.round(maximum) : "—"} MS`;
     $("#start-button").disabled = ["running", "starting", "live"].includes(data.status);
     $("#stop-button").disabled = !["running", "starting"].includes(data.status);
   }

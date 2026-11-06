@@ -3,11 +3,16 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import hashlib
 import json
 import logging
-from collections.abc import AsyncIterator
+import threading
+import time
+from collections.abc import AsyncIterator, Callable
+from datetime import datetime, timedelta, timezone
 from typing import Any
+from uuid import uuid4
 
 from agents.analysis_tools import (
     ImpactAnalysisTool,
@@ -51,8 +56,7 @@ class Orchestrator:
         self.moment_tool = MomentDetectionTool()
         self.narrator = narrator or Narrator(cache=narration_cache)
         self.framework_agents_enabled = framework_agents_enabled
-        self._agent_state: MatchState | None = None
-        self._agent_suite: AgentSuite | None = None
+        self._section_lock = threading.Lock()
 
     @staticmethod
     def agents_for_mode(mode: str) -> tuple[str, ...]:
@@ -73,22 +77,14 @@ class Orchestrator:
             raise ValueError(f"Unsupported match mode: {mode}") from error
 
     def _agents_for_state(self, state: MatchState) -> AgentSuite:
-        if self._agent_suite is None or self._agent_state is not state:
-            self._agent_suite = build_agent_suite(
-                state=state,
-                shape_analyst=self.shape_tool,
-                pattern_spotter=self.pattern_tool,
-                impact_analyst=self.impact_tool,
-                moment_detector=self.moment_tool,
-            )
-            self._agent_state = state
-        return self._agent_suite
+        return build_agent_suite(state=state)
 
     async def run_routed_agents(
         self,
         state: MatchState,
         *,
         mode: str = "Broadcast",
+        on_agent_complete: Callable[[str, str, float], None] | None = None,
     ) -> dict[str, str]:
         """Call only the mode-selected analyst agents, returning grounded replies."""
         selected = self.agents_for_mode(mode)
@@ -96,7 +92,8 @@ class Orchestrator:
             return {}
 
         try:
-            suite = self._agents_for_state(state)
+            snapshot = state.analysis_snapshot()
+            suite = self._agents_for_state(snapshot)
         except Exception as error:
             logger.warning(
                 "Agent Framework analysts unavailable (%s)",
@@ -119,19 +116,34 @@ class Orchestrator:
         answers: dict[str, str] = {}
         fact_ids = [
             _fact_id("input", record)
-            for record in state.events[-50:] + state.frames[-50:]
+            for record in snapshot.events[-50:] + snapshot.frames[-50:]
         ]
-        for agent_name in selected:
-            agent = agents[agent_name]
+
+        async def run_one(agent_name: str) -> tuple[str, str]:
+            started = time.perf_counter()
             answer = await ask(
-                agent,
+                agents[agent_name],
                 prompts[agent_name],
                 fallback="",
                 agent_name=agent_name,
                 fact_ids=fact_ids,
             )
-            if answer:
-                answers[agent_name] = answer
+            if on_agent_complete is not None:
+                on_agent_complete(
+                    agent_name,
+                    answer,
+                    (time.perf_counter() - started) * 1000,
+                )
+            return agent_name, answer
+
+        results = await asyncio.gather(
+            *(run_one(agent_name) for agent_name in selected)
+        )
+        answers = {
+            agent_name: answer
+            for agent_name, answer in results
+            if answer
+        }
         return answers
 
     def analyze_facts(self, state: MatchState) -> dict[str, Any]:
@@ -163,6 +175,138 @@ class Orchestrator:
             **results,
             "momentum_series": state.momentum_series,
         }
+
+    async def iter_analysis_tasks(
+        self,
+        state: MatchState,
+        *,
+        flagged_moments: list[dict[str, Any]] | None = None,
+        deadline_seconds: float = 8.0,
+        on_task_created: Callable[[dict[str, Any]], None] | None = None,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Run independent analysts against copies and yield results as they finish."""
+        if deadline_seconds <= 0:
+            raise ValueError("deadline_seconds must be greater than zero")
+        base = state.analysis_snapshot().snapshot()
+        now = datetime.now(timezone.utc)
+        task_deadline = (now + timedelta(seconds=deadline_seconds)).isoformat()
+        created_at = now.isoformat()
+        window_start = max(0.0, float(base["minute"]) - 10.0)
+
+        flagged = copy.deepcopy(flagged_moments or [])
+        task_specs = (
+            ("ShapeAnalyst", "shape"),
+            ("PatternSpotter", "patterns"),
+            ("ImpactAnalyst", "impact"),
+            ("MomentDetector", "moments"),
+        )
+
+        async def run_one(agent_name: str, section: str) -> dict[str, Any]:
+            task = {
+                "task_id": str(uuid4()),
+                "agent": agent_name,
+                "window": {
+                    "start_minute": window_start,
+                    "end_minute": float(base["minute"]),
+                },
+                "deadline": task_deadline,
+                "created_at": created_at,
+            }
+            if on_task_created is not None:
+                on_task_created(task)
+            snapshot = copy.deepcopy(base)
+            started = datetime.now(timezone.utc)
+            result, facts = await asyncio.to_thread(
+                self._analyze_task_section,
+                agent_name,
+                section,
+                snapshot,
+                flagged,
+            )
+            with self._section_lock:
+                if section == "shape":
+                    state.shape = result
+                elif section == "patterns":
+                    state.patterns = result
+                elif section == "impact":
+                    state.impact = result["impact"]
+                    state.momentum_series = result["momentum_series"]
+                else:
+                    known = {moment.get("id") for moment in state.moments}
+                    state.moments.extend(
+                        copy.deepcopy(moment)
+                        for moment in facts
+                        if moment.get("id") not in known
+                    )
+            output_id = _fact_id(section, facts)
+            return {
+                "task": task,
+                "facts": facts,
+                "output_id": output_id,
+                "latency_ms": max(
+                    0.0,
+                    (datetime.now(timezone.utc) - started).total_seconds() * 1000,
+                ),
+                "state": state,
+            }
+
+        tasks = [
+            asyncio.create_task(run_one(agent_name, section))
+            for agent_name, section in task_specs
+        ]
+        try:
+            for completed in asyncio.as_completed(tasks):
+                yield await completed
+        finally:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    def _analyze_task_section(
+        self,
+        agent_name: str,
+        section: str,
+        snapshot: dict[str, Any],
+        flagged_moments: list[dict[str, Any]],
+    ) -> tuple[Any, Any]:
+        state = MatchState(**snapshot)
+        if agent_name == "ShapeAnalyst":
+            tool = ShapeAnalysisTool()
+            tool._previous = {
+                team: {
+                    "formation": details.get("out_of_possession", {}).get("formation", ""),
+                    "block": details.get("block", {}).get("block", ""),
+                }
+                for team, details in state.shape.get("teams", {}).items()
+            }
+            result = tool.analyze(state)
+            return result, result
+        if agent_name == "PatternSpotter":
+            result = PatternAnalysisTool().analyze(state)
+            return result, result
+        if agent_name == "ImpactAnalyst":
+            result = ImpactAnalysisTool().analyze(state)
+            return result, result
+
+        shape_tool = ShapeAnalysisTool()
+        shape_tool._previous = {
+            team: {
+                "formation": details.get("out_of_possession", {}).get("formation", ""),
+                "block": details.get("block", {}).get("block", ""),
+            }
+            for team, details in state.shape.get("teams", {}).items()
+        }
+        state.shape = shape_tool.analyze(state)
+        impact = ImpactAnalysisTool().analyze(state)
+        state.impact = impact["impact"]
+        state.momentum_series = impact["momentum_series"]
+        additions = MomentDetectionTool().analyze(state)
+        by_id = {moment.get("id"): moment for moment in additions}
+        by_id.update({moment.get("id"): moment for moment in flagged_moments})
+        facts = list(by_id.values())
+        state.moments = facts
+        return facts, facts
 
     async def iter_tick_events(
         self,
