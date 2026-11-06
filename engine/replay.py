@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import gzip
 import json
 import threading
 from dataclasses import dataclass, field
@@ -15,6 +16,13 @@ from generator.match import player_metadata
 
 
 _PLAYER_METADATA = player_metadata()
+
+
+def _read_replay_json(path: Path) -> Any:
+    if path.suffix == ".gz":
+        with gzip.open(path, "rt", encoding="utf-8") as file:
+            return json.load(file)
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def _synthetic_event(event: dict[str, Any]) -> dict[str, Any]:
@@ -62,8 +70,8 @@ class ReplayDataset:
         event_file = Path(events_path)
         frame_file = Path(frames_path)
         try:
-            events = json.loads(event_file.read_text(encoding="utf-8"))
-            frames = json.loads(frame_file.read_text(encoding="utf-8"))
+            events = _read_replay_json(event_file)
+            frames = _read_replay_json(frame_file)
         except (OSError, json.JSONDecodeError) as error:
             raise RuntimeError(f"Unable to load replay dataset {name}: {error}") from error
         if not isinstance(events, list) or not isinstance(frames, list):
@@ -271,10 +279,16 @@ def default_datasets(
 ) -> list[ReplayDataset]:
     """Load the generated synthetic match."""
     project_root = Path(__file__).resolve().parent.parent
+    default_events = project_root / "outputs" / "synthetic_events.json"
+    default_frames = project_root / "outputs" / "synthetic_frames.json"
+    if events_path is None and default_events.with_suffix(".json.gz").is_file():
+        default_events = default_events.with_suffix(".json.gz")
+    if frames_path is None and default_frames.with_suffix(".json.gz").is_file():
+        default_frames = default_frames.with_suffix(".json.gz")
     return [
         ReplayDataset.from_files(
-            events_path or project_root / "outputs" / "synthetic_events.json",
-            frames_path or project_root / "outputs" / "synthetic_frames.json",
+            events_path or default_events,
+            frames_path or default_frames,
             name="synthetic",
         )
     ]

@@ -1,40 +1,53 @@
 # Overseer
 
+Live website: `<LIVE_URL>` (replace this placeholder with the deployed site URL).
+
 Overseer is a multi-agent match-intelligence platform. Specialist agents analyse team shape, pressing, patterns of play, player influence and momentum from a live event feed, writing structured, traceable facts into a shared state. A grounded Narrator renders them as timecoded broadcast overlays and personalised, multilingual commentary for broadcast, analyst and fan modes, on Microsoft Foundry and Azure.
+
+## Screenshots
+
+Screenshot placeholder: add a match-desk image here after deployment.
 
 ## Architecture
 
 ```mermaid
 flowchart LR
     Browser["Azure Static Web Apps<br/>dashboard and overlay"]
-    API["Azure Container Apps<br/>FastAPI and in-process feed"]
+    API["Azure Container Apps<br/>FastAPI · exactly one replica"]
     State["Shared MatchState"]
+    Scheduler["Analysis scheduler<br/>immutable snapshot every 3 s"]
+    Analysts["Four specialist agents<br/>concurrent analysis"]
     Engine["Deterministic analysis tools"]
-    Facts["Flagged facts"]
-    Fast["Fact template (delay buffered)"]
+    Facts["Bounded flagged-fact queue"]
+    Fast["Immediate fact template"]
     Framework["Microsoft Agent Framework"]
     Foundry["Microsoft Foundry deployment"]
-    Narration["Follow-up narration overlay"]
+    Narration["Grounded follow-up narration"]
+    Delay["8-second display-delay buffer"]
+    SSE["Server-sent events"]
     Monitor["Azure Monitor / Application Insights"]
-    Browser <-->|"HTTPS, SSE, CORS"| API
-    API --> State --> Engine --> Facts
-    Facts --> Fast --> API
-    Facts --> Framework --> Foundry
-    Foundry --> Framework --> Narration --> API
+    Browser <-->|"HTTPS, CORS"| API
+    API --> State --> Scheduler --> Analysts
+    Analysts --> Engine --> Facts
+    Facts --> Fast --> Delay
+    Facts --> Framework --> Foundry --> Framework --> Narration --> Delay
+    Delay --> API --> SSE --> Browser
     Framework -. "OpenTelemetry spans" .-> Monitor
-    Future["Intended production ingest: Event Hubs"] -.-> API
+    Feed["Synthetic feed / replay"] --> State
+    Future["Intended production ingest: Event Hubs"] -.-> State
 ```
 
 The running feed and replay state are in-process. Event Hubs is the intended
 production ingest, but is not part of this deployment phase. Cosmos DB and
 Azure Web PubSub are also out of scope; the current overlay transport is
-server-sent events (SSE).
+server-sent events (SSE). The Container App is pinned to exactly one replica
+because match state and the delayed stream buffer are held in memory.
 
 ## What runs where
 
 | Component | Location | Responsibility |
 | --- | --- | --- |
-| FastAPI backend | Azure Container Apps | Match state, deterministic engine, Agent Framework calls, overlay JSON, SSE |
+| FastAPI backend | Azure Container Apps (one replica) | Match state, deterministic engine, Agent Framework calls, overlay JSON, delayed SSE |
 | Dashboard and browser overlay | Azure Static Web Apps (Free) | Browser UI, configured to call the backend API |
 | Language model | Microsoft Foundry | Grounded specialist-agent and narration responses |
 | Telemetry | Azure Monitor / Application Insights | Export of OpenTelemetry agent spans when configured |
@@ -58,13 +71,14 @@ use API keys.
 | In-memory feed and replay | Working | Synthetic replay is supported; runtime state is process-local |
 | SSE overlays and dashboard latency | Working | Overlay JSON contains event-to-emission latency; dashboard displays it |
 | Azure Monitor tracing | Working when configured | Set `APPLICATIONINSIGHTS_CONNECTION_STRING`; otherwise the app warns and continues |
-| Container Apps and Static Web Apps deployment | Designed; not deployed by this repository change | Run the PowerShell deployment script against your Azure subscription |
+| Container Apps replica count | Pinned to one by deployment script | State, replay, and delayed delivery are in process and are not replica-safe |
+| Container Apps and Static Web Apps deployment | Scripted; deployment not verified here | Run `infra\deploy.bat` from cmd.exe against your Azure subscription |
 | Event Hubs ingestion | Intended production design | Not provisioned or enabled by the deployment script |
 | Cosmos DB persistence and Web PubSub | Out of scope | Not provisioned or required for the in-process feed |
 
 ## Requirements
 
-- Windows PowerShell 5.1 or later
+- cmd.exe for the Windows deployment script
 - Python 3.13 for local development (the deployment container uses Python 3.12)
 - An Azure subscription and Azure CLI
 - A Microsoft Foundry project and a deployed model
@@ -72,10 +86,10 @@ use API keys.
 
 ## Configure a local Foundry connection
 
-From the repository root in PowerShell:
+From the repository root in cmd.exe:
 
-```powershell
-Copy-Item .env.example .env
+```bat
+copy .env.example .env
 notepad .env
 ```
 
@@ -87,11 +101,11 @@ credentials.
 
 Install dependencies, sign in, and run the API:
 
-```powershell
+```bat
 py -3.13 -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.venv\Scripts\python.exe -m pip install -r requirements.txt
 az login
-.\.venv\Scripts\python.exe -m uvicorn api.main:app --reload
+.venv\Scripts\python.exe -m uvicorn api.main:app --reload
 ```
 
 Open `http://127.0.0.1:8000`, then choose **START REPLAY**. The app loads
@@ -101,10 +115,10 @@ fallback.
 
 Run the Foundry smoke scripts and tests:
 
-```powershell
-.\.venv\Scripts\python.exe scripts\test_agents.py
-.\.venv\Scripts\python.exe scripts\test_narrator.py
-.\.venv\Scripts\python.exe -m pytest -q
+```bat
+.venv\Scripts\python.exe scripts\test_agents.py
+.venv\Scripts\python.exe scripts\test_narrator.py
+.venv\Scripts\python.exe -m pytest -q
 ```
 
 `test_agents.py` compares ShapeAnalyst output with `engine.patterns.block()`.
@@ -115,53 +129,65 @@ Both smoke scripts allow a longer response window than the live-path timeout.
 
 With Docker installed:
 
-```powershell
+```bat
 docker build -t overseer-api .
 docker run --rm -p 8000:8000 --env-file .env overseer-api
 ```
 
-The image starts `uvicorn api.main:app` on port 8000. `.dockerignore` excludes
-`.env` and virtual environments from the build context.
+The image starts `uvicorn api.main:app` on port 8000. The Docker build compresses
+the bundled synthetic replay data and the backend reads it transparently.
+`.dockerignore` excludes `.env` and virtual environments from the build context.
 
-## Deploy to Azure from PowerShell
+## Deploy to Azure from cmd.exe
 
 Create a Foundry project and model deployment first. Obtain the full Azure
 resource ID of that Foundry **project**; the deployment script does not create
 Foundry resources or infer the project scope from the endpoint.
 
-1. Edit the parameters at the top of `infra/deploy.ps1`:
-   - `$ResourceGroupName`
-   - `$Region`
-   - `$ContainerAppName`
-   - `$StaticWebAppName`
-   - `$FoundryProjectScope`
+1. Edit the configuration values near the top of `infra\deploy.bat`:
+   - `RESOURCE_GROUP_NAME`
+   - `REGION`
+   - `STATIC_WEB_APP_REGION`
+   - `CONTAINER_APP_NAME`
+   - `STATIC_WEB_APP_NAME`
+   - `ACR_NAME`
+   - `FOUNDRY_PROJECT_SCOPE`
 2. Ensure the repository-root `.env` contains the Foundry endpoint and model
    deployment name. Application Insights is optional.
-3. Sign in, select your subscription, install the Static Web Apps CLI, then run:
+3. Open cmd.exe at the repository root, sign in, select your subscription, and
+   install the Static Web Apps CLI:
 
-```powershell
+```bat
 az login
 az account set --subscription "<subscription-id>"
 npm install -g @azure/static-web-apps-cli
-.\infra\deploy.ps1
 ```
 
-The script upgrades/adds the Container Apps Azure CLI extension, deploys the
-repository source with `az containerapp up` using `--source .`,
-`--ingress external`, and `--target-port 8000`, assigns the backend's
-system-managed identity, and grants that identity the Foundry User role on `$FoundryProjectScope` using role
-definition ID `53ca6127-db72-4b80-b1b0-d745d6d5456d`. It creates a Free
-Static Web App, stages `web/` with the backend URL in `config.js`, deploys the staged
-content using the Static Web Apps CLI, and restricts backend CORS to the new
-Static Web App origin. The temporary staged copy is removed after deployment.
+The batch file uses the local Docker CLI to build and push the backend image to
+ACR, updates the Container App to exactly one replica, assigns its
+system-managed identity, and grants it the Foundry User role on
+`FOUNDRY_PROJECT_SCOPE` using role definition ID
+`53ca6127-db72-4b80-b1b0-d745d6d5456d`. It creates a Free Static Web App,
+stages `web/` with the backend URL in `config.js`, deploys the staged content
+using the Static Web Apps CLI, and restricts backend CORS to the Static Web App
+origin. The temporary staged copy is removed after deployment.
 
-The deployment script reads environment values from the process environment
-first, then from `.env`. It does not print the Foundry endpoint, connection
-string, or Static Web Apps deployment token. The Azure account needs permission
-to create the resources and assign roles; role assignment may require an
-elevated Azure RBAC role such as Owner or User Access Administrator.
+The script reads `FOUNDRY_PROJECT_ENDPOINT`, `FOUNDRY_MODEL`, and the optional
+Application Insights connection string from the process environment first,
+then `.env`. It does not print the Static Web Apps deployment token. The Azure
+account needs permission to create the resources and assign roles; role
+assignment may require an elevated Azure RBAC role such as Owner or User Access
+Administrator.
 
-## Agent, latency, and tracing design
+Run either part independently after the initial setup, or run both:
+
+```bat
+cmd.exe /c infra\deploy.bat backend
+cmd.exe /c infra\deploy.bat frontend
+cmd.exe /c infra\deploy.bat
+```
+
+## How the agents collaborate
 
 ShapeAnalyst, PatternSpotter, ImpactAnalyst, and MomentDetector use local,
 typed engine-function tools through Agent Framework `Agent` instances backed
@@ -169,13 +195,14 @@ by `FoundryChatClient`. The Narrator receives structured facts only; it does not
 read raw events. Narration instructions require it to use only supplied facts,
 preserve player and club names, and follow the selected language and mode.
 
-When a deterministic analysis flags a fact, Overseer emits the templated fact
-overlay before scheduling narration. Every three match-seconds by default,
-the four analyst roles create task records and run concurrently against
-detached match snapshots. Each task updates only its assigned state section
-and publishes structured results to a bounded fact queue; the Narrator consumes
-flagged facts without waiting for unrelated analysts. Unflagged events do not
-trigger model calls.
+Every three match-seconds by default, the four analyst roles receive the same
+detached, immutable match snapshot and run concurrently. Each task updates only
+its assigned state section. Deterministic analysis runs alongside the agents;
+unflagged events do not trigger model calls. Flagged facts enter a bounded
+queue. Overseer emits a grounded template overlay first, then the Narrator
+creates a follow-up without waiting for unrelated analysts. Both frames and
+overlays are held by the eight-match-second display-delay buffer before clients
+receive them over SSE.
 
 Foundry calls are capped by `LLM_MAX_CONCURRENCY` (default `2`) and retry once
 with backoff after HTTP 429. `ANALYSIS_TICK_SECONDS` controls the analyst
@@ -244,7 +271,7 @@ payloads and retries if its initial API request is unavailable.
   model correctness.
 - Match state, recent overlays, and narration cache are in process and are not
   shared across replicas or persisted across restarts.
-- Event Hubs is the intended production ingestion service. This phase retains
+- Event Hubs is the intended production ingestion service. The current deployment retains
   the in-process feed; Event Hubs, Cosmos DB, and Web PubSub infrastructure
   are not provisioned here.
 - Verify target-region availability, pricing, quota, managed-identity role

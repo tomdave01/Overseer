@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import gzip
 import json
 import threading
 import time
@@ -136,6 +137,41 @@ def test_replay_processes_only_synthetic_records(tmp_path):
     assert len(state.frames) == 1
     assert state.frames[0]["players"][0]["shirt"] == 6
     assert state.frames[0]["players"][0]["name"] == "Rico Vale"
+
+
+def test_replay_dataset_loads_gzipped_json(tmp_path):
+    events_path = tmp_path / "events.json.gz"
+    frames_path = tmp_path / "frames.json.gz"
+    events_path.write_bytes(gzip.compress(json.dumps([{"type": "pass"}]).encode()))
+    frames_path.write_bytes(gzip.compress(json.dumps([{"players": []}]).encode()))
+
+    dataset = ReplayDataset.from_files(events_path, frames_path, name="compressed")
+
+    assert dataset.events == [{"type": "pass", "source": "synthetic"}]
+    assert dataset.frames == [{"players": [], "source": "synthetic"}]
+
+
+def test_default_datasets_uses_gzipped_outputs(tmp_path, monkeypatch):
+    import engine.replay as replay_module
+
+    output_dir = tmp_path / "outputs"
+    output_dir.mkdir()
+    (output_dir / "synthetic_events.json.gz").write_bytes(
+        gzip.compress(json.dumps([{"type": "pass"}]).encode())
+    )
+    (output_dir / "synthetic_frames.json.gz").write_bytes(
+        gzip.compress(json.dumps([{"players": []}]).encode())
+    )
+    monkeypatch.setattr(
+        replay_module,
+        "__file__",
+        str(tmp_path / "engine" / "replay.py"),
+    )
+
+    dataset = replay_module.default_datasets()[0]
+
+    assert dataset.events == [{"type": "pass", "source": "synthetic"}]
+    assert dataset.frames == [{"players": [], "source": "synthetic"}]
 
 
 def test_narrator_uses_templated_fallback_after_timeout():
