@@ -1,134 +1,127 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" dir="ltr">
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="theme-color" content="#101610">
-    <title>Overseer — Match Intelligence</title>
+    <meta name="theme-color" content="#111820">
+    <title>Overseer — Match Control</title>
     <link rel="stylesheet" href="/styles.css">
   </head>
   <body>
     <header class="topbar">
-      <a class="brand" href="/" aria-label="Overseer home">
-        <span class="brand-mark">GM</span>
-        <span><strong>OVERSEER</strong><small>LIVE MATCH INTELLIGENCE</small></span>
+      <a class="brand" href="/" aria-label="Overseer match control">
+        <span class="brand-mark">O</span>
+        <span class="brand-name"><strong>OVERSEER</strong><small>MATCH CONTROL</small></span>
       </a>
-      <div class="top-meta">
-        <span class="live-indicator"><i></i><span id="connection-label">CONNECTING</span></span>
+      <div class="match-score" aria-label="Current score">
+        <span class="team-label rovers-text">ROVERS</span>
+        <strong id="score">0 <i>—</i> 0</strong>
+        <span class="team-label united-text">UNITED</span>
+      </div>
+      <div class="top-controls">
+        <span class="status-indicator"><i id="connection-dot"></i><span id="connection-label">CONNECTING</span></span>
         <span id="source-label" class="source-pill">SYNTHETIC DATA</span>
-        <span id="latency-label" class="latency-pill">LATENCY —</span>
-        <span id="delay-label" class="latency-pill">DELAY —</span>
-        <span id="agent-latency-label" class="latency-pill">AGENTS —</span>
+        <span class="clock-pill"><b id="minute">00.00</b><small id="match-status">READY</small></span>
+        <span id="delay-label" class="delay-pill">DISPLAY DELAY —</span>
+        <label class="compact-control">SPEED
+          <select id="speed" aria-label="Playback speed">
+            <option value="10">10×</option><option value="25">25×</option>
+            <option value="50" selected>50×</option><option value="100">100×</option>
+          </select>
+        </label>
+        <label class="compact-control">MODE
+          <select id="mode" aria-label="Commentary mode">
+            <option>Broadcast</option><option>Analyst</option><option>Fan</option>
+          </select>
+        </label>
+        <label class="compact-control language-control">LANGUAGE
+          <select id="language" aria-label="Commentary language">
+            <option>English</option><option>Spanish</option><option>Arabic</option><option>French</option>
+          </select>
+        </label>
+        <label class="compact-control club-control">FAVOURITE
+          <select id="favourite-team" aria-label="Favourite club">
+            <option>Neutral</option><option>Rovers</option><option>United</option>
+          </select>
+        </label>
+        <button id="start-button" class="icon-button start-button" type="button" aria-label="Start replay" title="Start replay">▶</button>
+        <button id="stop-button" class="icon-button" type="button" aria-label="Stop replay" title="Stop replay" disabled>■</button>
       </div>
     </header>
 
-    <main class="dashboard">
-      <section class="matchbar panel">
-        <div class="match-team home-team"><span class="team-crest crest-rovers">R</span><span>ROVERS</span></div>
-        <div class="scoreboard">
-          <div class="score" id="score">0 <span>—</span> 0</div>
-          <div class="match-clock"><span id="minute">00.00</span>' <span class="clock-dot">•</span> <span id="match-status">READY</span></div>
+    <main class="match-main">
+      <section class="pitch-stage" aria-label="Live match pitch">
+        <canvas id="pitch" tabindex="0" role="img" aria-label="Live 2D football pitch. Click a player to inspect them."></canvas>
+        <div id="pitch-empty" class="pitch-empty">
+          <span class="empty-mark">○</span>
+          <strong>Awaiting tracking data</strong>
+          <small>Start the synthetic replay to bring the match to life.</small>
         </div>
-        <div class="match-team away-team"><span>UNITED</span><span class="team-crest crest-united">U</span></div>
-        <div class="match-controls">
-          <label class="speed-control">SPEED
-            <select id="speed">
-              <option value="10">10×</option><option value="25">25×</option>
-              <option value="50" selected>50×</option><option value="100">100×</option>
-            </select>
-          </label>
-          <button id="start-button" class="button button-primary">▶ <span>START REPLAY</span></button>
-          <button id="stop-button" class="button button-quiet" disabled>■ STOP</button>
+        <div class="pitch-tools">
+          <span class="pitch-tools-label">PITCH LAYERS</span>
+          <label><input id="toggle-shape" type="checkbox"> Team shape</label>
+          <label><input id="toggle-passes" type="checkbox"> Pass lines</label>
+          <label><input id="toggle-heat" type="checkbox"> Heat zone</label>
+          <span class="pitch-legend"><i class="legend-rovers"></i>Rovers <i class="legend-united"></i>United <i class="legend-ball"></i>Ball</span>
         </div>
-      </section>
-
-      <section class="main-grid">
-        <div class="visual-column">
-          <section class="panel pitch-panel">
-            <div class="section-heading">
-              <div><span class="eyebrow">LIVE TRACKING</span><h2>Match pitch</h2></div>
-              <div class="pitch-legend"><span><i class="legend-rovers"></i> Rovers</span><span><i class="legend-united"></i> United</span><span><i class="legend-ball"></i> Ball</span></div>
-            </div>
-            <div class="pitch-wrap">
-              <canvas id="pitch" aria-label="Live 2D pitch visualization"></canvas>
-              <div id="pitch-empty" class="pitch-empty">Start replay to track the match</div>
-            </div>
-            <div class="pitch-footer"><span id="possession-label">POSSESSION —</span><span id="spotlight-label">NO PLAYER SPOTLIGHT</span></div>
-          </section>
-
-          <section class="panel event-panel">
-            <div class="section-heading">
-              <div><span class="eyebrow">PLAY-BY-PLAY</span><h2>Event log</h2></div>
-              <button id="replay-button" class="button button-quiet" disabled>↻ REPLAY MOMENT</button>
-            </div>
-            <div id="event-log" class="event-log"><p class="empty-note">Events will appear here as the match unfolds.</p></div>
-          </section>
-        </div>
-
-        <aside class="insight-column">
-          <section class="panel preferences-panel">
-            <div class="section-heading compact-heading"><div><span class="eyebrow">YOUR VIEW</span><h2>Personalize</h2></div></div>
-            <div class="preference-grid">
-              <label>MODE
-                <select id="mode"><option>Broadcast</option><option>Analyst</option><option>Fan</option></select>
-              </label>
-              <label>LANGUAGE
-                <select id="language"><option>English</option><option>Spanish</option><option>Arabic</option><option>French</option></select>
-              </label>
-              <label>FAVOURITE CLUB
-                <select id="favourite-team"><option>Neutral</option><option>Rovers</option><option>United</option></select>
-              </label>
-              <label>FAVOURITE PLAYER
-                <select id="favourite-player"><option value="">Choose player</option></select>
-              </label>
-            </div>
-          </section>
-
-          <section class="panel narration-panel">
-            <div class="section-heading compact-heading">
-              <div><span class="eyebrow">AI COMMENTARY <span id="fallback-badge" class="fallback-badge hidden">TEMPLATE FALLBACK</span></span><h2>Narrator</h2></div>
-              <span class="narration-minute" id="narration-minute">—</span>
-            </div>
-            <p id="narration-text" class="narration-text">Start the replay for fact-grounded match commentary.</p>
-            <div class="overlay-inspector">
-              <div>
-                <span class="eyebrow">RENDERED OVERLAY</span>
-                <article id="overlay-preview" class="overlay-preview"><strong>Waiting for overlay JSON…</strong></article>
-              </div>
-              <div>
-                <span class="eyebrow">RAW OVERLAY JSON</span>
-                <pre id="overlay-json" class="overlay-json">No overlay received yet.</pre>
-              </div>
-            </div>
-            <div id="insight-popups" class="insight-popups" aria-live="polite"></div>
-          </section>
-
-          <section class="panel analyst-panel">
-            <div class="section-heading compact-heading"><div><span class="eyebrow">SPECIALIST AGENTS</span><h2>Match insights</h2></div></div>
-            <div class="agent-cards">
-              <article class="agent-card">
-                <div class="agent-card-heading"><span class="agent-icon shape-icon">S</span><div><h3>Shape analyst</h3><span>FORMATION & BLOCK</span></div></div>
-                <div id="shape-card" class="agent-card-body"><p class="muted">Waiting for match data…</p></div>
-              </article>
-              <article class="agent-card">
-                <div class="agent-card-heading"><span class="agent-icon pattern-icon">P</span><div><h3>Pattern spotter</h3><span>FLAGGED TRENDS</span></div></div>
-                <div id="pattern-card" class="agent-card-body"><p class="muted">No flagged patterns yet.</p></div>
-              </article>
-              <article class="agent-card">
-                <div class="agent-card-heading"><span class="agent-icon impact-icon">I</span><div><h3>Impact analyst</h3><span>ALL PLAYERS · IMPACT & GRAVITY</span></div></div>
-                <div id="impact-card" class="agent-card-body" aria-live="polite"><p class="muted">Waiting for match data…</p></div>
-              </article>
-            </div>
-          </section>
-
-          <section class="panel momentum-panel">
-            <div class="section-heading compact-heading"><div><span class="eyebrow">MATCH FLOW</span><h2>Momentum</h2></div><span class="chart-key"><i></i> Rovers advantage</span></div>
-            <canvas id="momentum-chart" aria-label="Match momentum chart"></canvas>
-            <div class="chart-teams"><span>ROVERS</span><span>UNITED</span></div>
-          </section>
-
+        <div class="pitch-clock"><span id="possession-label">POSSESSION —</span><span id="spotlight-label">NO PLAYER SELECTED</span></div>
+        <section id="player-card" class="player-card" aria-live="polite" hidden>
+          <button id="player-card-close" class="card-close" type="button" aria-label="Close player card">×</button>
+          <span id="player-card-team" class="card-kicker">PLAYER PROFILE</span>
+          <h2 id="player-card-name">Select a player</h2>
+          <div id="player-card-role" class="player-role"></div>
+          <div id="player-card-stats" class="player-card-stats"></div>
+          <button id="follow-player" class="follow-button" type="button">Follow in Fan mode</button>
+        </section>
+        <section id="insight-stack" class="insight-stack" aria-live="polite" aria-label="Live match insights"></section>
+        <div id="panel-scrim" class="panel-scrim" hidden></div>
+        <aside id="data-panel" class="data-panel" aria-labelledby="panel-title" aria-hidden="true" inert>
+          <header class="panel-header">
+            <div><span class="panel-kicker">MATCH ANALYSIS</span><h1 id="panel-title">Team stats</h1></div>
+            <button id="panel-close" class="icon-button close-button" type="button" aria-label="Close panel">×</button>
+          </header>
+          <div id="panel-content" class="panel-content"></div>
+        </aside>
+        <aside id="history-panel" class="history-panel" aria-labelledby="history-title" aria-hidden="true" inert>
+          <header class="panel-header">
+            <div><span class="panel-kicker">COMMENTARY ARCHIVE</span><h1 id="history-title">History</h1></div>
+            <button id="history-close" class="icon-button close-button" type="button" aria-label="Close history">×</button>
+          </header>
+          <div class="history-filters">
+            <label>IMPORTANCE
+              <select id="history-importance">
+                <option value="all">All moments</option><option value="high">High priority</option><option value="standard">Standard</option>
+              </select>
+            </label>
+            <label>PLAYER
+              <input id="history-player" type="search" placeholder="Filter by player" autocomplete="off">
+            </label>
+          </div>
+          <div id="history-list" class="history-list"><p class="empty-note">No commentary yet.</p></div>
         </aside>
       </section>
+
+      <nav class="panel-nav" aria-label="Match data panels">
+        <span class="nav-caption">MATCH DATA</span>
+        <button type="button" data-panel="teams" aria-keyshortcuts="1"><kbd>1</kbd> Team stats</button>
+        <button type="button" data-panel="players" aria-keyshortcuts="2"><kbd>2</kbd> Player stats</button>
+        <button type="button" data-panel="impact" aria-keyshortcuts="3"><kbd>3</kbd> Impact</button>
+        <button type="button" data-panel="shape" aria-keyshortcuts="4"><kbd>4</kbd> Shape & patterns</button>
+        <button type="button" data-panel="momentum" aria-keyshortcuts="5"><kbd>5</kbd> Momentum</button>
+        <button type="button" data-panel="agents" aria-keyshortcuts="6"><kbd>6</kbd> Agents</button>
+        <button id="recap-nav" type="button" data-panel="recap" aria-keyshortcuts="7" disabled><kbd>7</kbd> Recap</button>
+        <button type="button" data-panel="raw" aria-keyshortcuts="8"><kbd>8</kbd> Raw JSON</button>
+      </nav>
+
+      <footer class="commentary-bar">
+        <button id="latest-commentary" class="latest-commentary" type="button" aria-label="Open commentary history">
+          <span class="commentary-icon" aria-hidden="true">◉</span>
+          <span id="commentary-minute" class="commentary-minute">—</span>
+          <span id="commentary-text" class="commentary-copy">Commentary will appear here as the match unfolds.</span>
+          <span id="commentary-importance" class="importance-tag">LIVE</span>
+        </button>
+        <button id="history-button" class="history-button" type="button" aria-keyshortcuts="H">HISTORY <kbd>H</kbd></button>
+      </footer>
     </main>
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
     <script src="/config.js"></script>

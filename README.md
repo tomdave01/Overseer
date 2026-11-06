@@ -54,6 +54,7 @@ use API keys.
 | Delayed stream and commentary history | Working | Stream output is delayed by eight match-seconds by default; commentary history is bounded to 500 items |
 | All-player impact and gravity | Working | `/stats/players` and the Impact analyst include all 22 players, impact components, nearby-opponent pressure, convergence, and normalized gravity index |
 | Match recaps | Working | Deterministic recap facts feed multilingual Broadcast/Analyst/Fan narration; halftime and full-time recaps are generated automatically during replay |
+| Manager-style match desk | Working | Animated full-screen pitch, timed insight cards, commentary history, sortable statistics panels, and transparent broadcast overlay |
 | In-memory feed and replay | Working | Synthetic replay is supported; runtime state is process-local |
 | SSE overlays and dashboard latency | Working | Overlay JSON contains event-to-emission latency; dashboard displays it |
 | Azure Monitor tracing | Working when configured | Set `APPLICATIONINSIGHTS_CONNECTION_STRING`; otherwise the app warns and continues |
@@ -215,6 +216,22 @@ The deterministic bundle includes the score, team statistics, key moments and
 explanations, top influencers and component scores, patterns, block changes,
 and momentum swings. Only this bundle is sent to the Narrator. Replay triggers
 the halftime recap on reaching minute 45 and the full-time recap on completion.
+
+## Match desk interface
+
+The browser UI is plain HTML, CSS, and JavaScript with no build step.
+`web/config.js` continues to provide `OVERSEER_API_BASE_URL`; the dashboard
+and transparent `/overlay.html` client use it for API requests and the SSE
+stream. The match desk interpolates tracking frames on a canvas, with optional
+shape, pass, and heat layers. Click a player to inspect their statistics; in
+Fan mode the selected player is followed by narration.
+
+Use the numbered panel shortcuts 1–8 to open match data, **H** for commentary
+history, and **Esc** to close the active panel. Panels overlay rather than
+resize the pitch. Arabic selection switches the interface direction to RTL.
+The dashboard relies on `EventSource` reconnection and shows a reconnecting
+state; the companion transparent overlay independently hydrates recent
+payloads and retries if its initial API request is unavailable.
 
 ## Responsible AI and limitations
 

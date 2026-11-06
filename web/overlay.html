@@ -15,22 +15,32 @@
       html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: transparent !important; }
       body { color: #f4f7f2; }
       #overlay-stage { position: fixed; inset: 0; pointer-events: none; }
-      #overlay-stack { position: absolute; left: 5%; bottom: 8%; display: grid; gap: 14px; width: min(840px, 72vw); }
+      #overlay-stack { position: absolute; right: 4%; top: 6%; display: grid; align-content: start; gap: 10px; width: min(420px, 30vw); max-height: 74%; overflow: hidden; }
       .broadcast-card {
-        position: relative; display: grid; gap: 8px; padding: 22px 28px 22px 32px;
+        position: relative; display: grid; gap: 7px; padding: 14px 42px 14px 17px;
         border: 1px solid rgba(182, 243, 91, .55); border-left: 7px solid var(--green);
         border-radius: 5px; background: var(--glass); box-shadow: 0 12px 40px rgba(0,0,0,.4);
         animation: enter .32s ease-out both; backdrop-filter: blur(8px);
       }
+      .broadcast-card.priority-high { border-left-color: #f0c776; }
+      .broadcast-card.pinned { box-shadow: 0 0 0 1px #e8c773, 0 12px 40px rgba(0,0,0,.4); }
       .broadcast-card.exiting { animation: exit .25s ease-in both; }
-      .broadcast-card h1 { margin: 0; font-size: clamp(24px, 2vw, 42px); line-height: 1.12; letter-spacing: .01em; }
-      .broadcast-card p { margin: 0; color: #e2e9df; font-size: clamp(18px, 1.35vw, 26px); line-height: 1.35; }
-      .broadcast-meta { display: flex; justify-content: space-between; gap: 14px; color: #b6f35b; font: 700 14px/1.2 Consolas, monospace; letter-spacing: .1em; text-transform: uppercase; }
-      .broadcast-stat { color: #fff; font: 700 17px Consolas, monospace; }
+      .broadcast-card h1 { margin: 0; font-size: clamp(14px, 1.2vw, 22px); line-height: 1.2; letter-spacing: .01em; }
+      .broadcast-card p { margin: 0; color: #e2e9df; font-size: clamp(11px, .8vw, 15px); line-height: 1.45; }
+      .broadcast-meta { display: flex; justify-content: space-between; gap: 10px; color: #b6f35b; font: 700 9px/1.2 Consolas, monospace; letter-spacing: .08em; text-transform: uppercase; }
+      .broadcast-stat { color: #fff; font: 700 10px Consolas, monospace; }
+      .broadcast-actions { position: absolute; top: 7px; right: 7px; display: grid; gap: 4px; }
+      .broadcast-actions button { width: 22px; height: 22px; padding: 0; border: 1px solid rgba(255,255,255,.25); border-radius: 3px; background: rgba(15,20,19,.65); color: #fff; cursor: pointer; font: 12px Consolas, monospace; }
+      .broadcast-actions button:hover { color: var(--green); border-color: var(--green); }
       #marking-layer { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
       #connection-state { position: absolute; right: 2%; top: 2%; color: rgba(255,255,255,.7); font: 12px Consolas, monospace; }
+      [dir="rtl"] #overlay-stack { right: auto; left: 4%; }
+      [dir="rtl"] .broadcast-card { border-right: 7px solid var(--green); border-left-width: 1px; }
+      [dir="rtl"] .broadcast-card.priority-high { border-right-color: #f0c776; }
+      [dir="rtl"] .broadcast-actions { right: auto; left: 7px; }
       @keyframes enter { from { opacity: 0; transform: translateX(-28px) translateY(10px); } to { opacity: 1; transform: translate(0); } }
       @keyframes exit { to { opacity: 0; transform: translateX(-20px); } }
+      @media (max-width: 700px) { #overlay-stack { width: min(320px, 54vw); right: 2%; top: 5%; } }
       @media (prefers-reduced-motion: reduce) { .broadcast-card, .broadcast-card.exiting { animation-duration: .01ms; } }
     </style>
   </head>

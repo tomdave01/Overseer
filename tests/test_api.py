@@ -16,12 +16,16 @@ def test_static_dashboard_and_state_route():
     with TestClient(app) as client:
         page = client.get("/")
         assert page.status_code == 200
-        assert "Match pitch" in page.text
+        assert "Live 2D football pitch" in page.text
+        assert "data-panel=\"teams\"" in page.text
+        assert "id=\"insight-stack\"" in page.text
+        assert "id=\"history-panel\"" in page.text
         assert client.get("/app.js").status_code == 200
         assert client.get("/styles.css").status_code == 200
         assert client.get("/overlay").status_code == 200
         assert "transparent" in client.get("/overlay.html").text
         assert client.get("/overlay.js").status_code == 200
+        assert 'id="overlay-stack"' in client.get("/overlay.html").text
         assert "OVERSEER_API_BASE_URL" in client.get("/config.js").text
         snapshot = client.get("/state")
         assert snapshot.status_code == 200
