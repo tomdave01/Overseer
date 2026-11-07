@@ -8,7 +8,6 @@ set "STATIC_WEB_APP_REGION=eastus2"
 set "CONTAINER_APP_NAME=overseer-api"
 set "STATIC_WEB_APP_NAME=overseer-web"
 set "ACR_NAME=overseerrgacr"
-set "FOUNDRY_PROJECT_SCOPE=/subscriptions/d6e4e6dc-d576-4acd-955e-865ce88d5452/resourceGroups/overseer-rg/providers/Microsoft.CognitiveServices/accounts/Overseer1-resource/projects/Overseer1"
 set "FOUNDRY_USER_ROLE_DEFINITION_ID=53ca6127-db72-4b80-b1b0-d745d6d5456d"
 
 set "DEPLOY_MODE=%~1"
@@ -19,6 +18,7 @@ for %%I in ("%~dp0..") do set "REPO_ROOT=%%~fI"
 set "ENV_FILE=%REPO_ROOT%\.env"
 if not defined FOUNDRY_PROJECT_ENDPOINT set "FOUNDRY_PROJECT_ENDPOINT="
 if not defined FOUNDRY_MODEL set "FOUNDRY_MODEL="
+if not defined FOUNDRY_PROJECT_SCOPE set "FOUNDRY_PROJECT_SCOPE="
 if not defined APPLICATIONINSIGHTS_CONNECTION_STRING set "APPLICATIONINSIGHTS_CONNECTION_STRING="
 if not defined LLM_MAX_CONCURRENCY set "LLM_MAX_CONCURRENCY="
 if not defined ANALYSIS_TICK_SECONDS set "ANALYSIS_TICK_SECONDS="
@@ -29,6 +29,7 @@ if exist "%ENV_FILE%" (
     for /f "usebackq eol=# tokens=1,* delims==" %%A in ("%ENV_FILE%") do (
         if /i "%%A"=="FOUNDRY_PROJECT_ENDPOINT" if not defined FOUNDRY_PROJECT_ENDPOINT set "FOUNDRY_PROJECT_ENDPOINT=%%B"
         if /i "%%A"=="FOUNDRY_MODEL" if not defined FOUNDRY_MODEL set "FOUNDRY_MODEL=%%B"
+        if /i "%%A"=="FOUNDRY_PROJECT_SCOPE" if not defined FOUNDRY_PROJECT_SCOPE set "FOUNDRY_PROJECT_SCOPE=%%B"
         if /i "%%A"=="APPLICATIONINSIGHTS_CONNECTION_STRING" if not defined APPLICATIONINSIGHTS_CONNECTION_STRING set "APPLICATIONINSIGHTS_CONNECTION_STRING=%%B"
         if /i "%%A"=="LLM_MAX_CONCURRENCY" if not defined LLM_MAX_CONCURRENCY set "LLM_MAX_CONCURRENCY=%%B"
         if /i "%%A"=="ANALYSIS_TICK_SECONDS" if not defined ANALYSIS_TICK_SECONDS set "ANALYSIS_TICK_SECONDS=%%B"
@@ -72,6 +73,18 @@ if not defined FOUNDRY_MODEL (
     echo ERROR: Set FOUNDRY_MODEL in the process environment or .env.
     exit /b 1
 )
+if not defined FOUNDRY_PROJECT_SCOPE (
+    echo ERROR: Set FOUNDRY_PROJECT_SCOPE to the full Foundry project resource ID in the process environment or .env.
+    exit /b 1
+)
+if not "%FOUNDRY_PROJECT_SCOPE:~0,14%"=="/subscriptions/" (
+    echo ERROR: FOUNDRY_PROJECT_SCOPE must be a full Azure resource ID beginning with /subscriptions/.
+    exit /b 1
+)
+if "%FOUNDRY_PROJECT_SCOPE:~14,1%"=="<" (
+    echo ERROR: FOUNDRY_PROJECT_SCOPE must not be a placeholder.
+    exit /b 1
+)
 if not "%FOUNDRY_PROJECT_ENDPOINT:~0,8%"=="https://" (
     echo ERROR: FOUNDRY_PROJECT_ENDPOINT must be an HTTPS Foundry project endpoint.
     exit /b 1
@@ -103,7 +116,9 @@ az group create --name "%RESOURCE_GROUP_NAME%" --location "%REGION%" --only-show
 if errorlevel 1 exit /b 1
 
 echo Creating the Azure Container Registry if needed...
-az acr create --name "%ACR_NAME%" --resource-group "%RESOURCE_GROUP_NAME%" --sku Basic --admin-enabled true --only-show-errors --output none
+az acr create --name "%ACR_NAME%" --resource-group "%RESOURCE_GROUP_NAME%" --sku Basic --admin-enabled false --only-show-errors --output none
+if errorlevel 1 exit /b 1
+az acr update --name "%ACR_NAME%" --admin-enabled false --only-show-errors --output none
 if errorlevel 1 exit /b 1
 
 echo Logging in to ACR...
@@ -126,13 +141,24 @@ if errorlevel 1 (
 )
 popd
 
-echo Deploying the backend Container App...
-az containerapp up --name "%CONTAINER_APP_NAME%" --resource-group "%RESOURCE_GROUP_NAME%" --location "%REGION%" --image "%IMAGE_TAG%" --registry-server "%ACR_NAME%.azurecr.io" --ingress external --target-port 8000 --env-vars "FOUNDRY_PROJECT_ENDPOINT=%FOUNDRY_PROJECT_ENDPOINT%" "FOUNDRY_MODEL=%FOUNDRY_MODEL%" "APPLICATIONINSIGHTS_CONNECTION_STRING=%APPLICATIONINSIGHTS_CONNECTION_STRING%" "LLM_MAX_CONCURRENCY=%LLM_MAX_CONCURRENCY%" "ANALYSIS_TICK_SECONDS=%ANALYSIS_TICK_SECONDS%" "STREAM_DELAY_SECONDS=%STREAM_DELAY_SECONDS%"
-if errorlevel 1 exit /b 1
+set "ACR_ID="
+for /f "delims=" %%A in ('az acr show --name "%ACR_NAME%" --resource-group "%RESOURCE_GROUP_NAME%" --query id --output tsv --only-show-errors') do set "ACR_ID=%%A"
+if not defined ACR_ID (
+    echo ERROR: Azure did not return the Container Registry resource ID.
+    exit /b 1
+)
+if /i "%ACR_ID%"=="None" (
+    echo ERROR: Azure did not return the Container Registry resource ID.
+    exit /b 1
+)
 
-echo Pinning the Container App to one replica...
-az containerapp update --name "%CONTAINER_APP_NAME%" --resource-group "%RESOURCE_GROUP_NAME%" --min-replicas 1 --max-replicas 1 --only-show-errors --output none
-if errorlevel 1 exit /b 1
+set "APP_EXISTS="
+for /f "delims=" %%A in ('az containerapp show --name "%CONTAINER_APP_NAME%" --resource-group "%RESOURCE_GROUP_NAME%" --query name --output tsv --only-show-errors 2^>nul') do set "APP_EXISTS=%%A"
+if not defined APP_EXISTS (
+    echo Bootstrapping the Container App with a public image so its managed identity can be configured...
+    az containerapp up --name "%CONTAINER_APP_NAME%" --resource-group "%RESOURCE_GROUP_NAME%" --location "%REGION%" --image "mcr.microsoft.com/azuredocs/containerapps-helloworld:latest" --ingress external --target-port 80 --only-show-errors --output none
+    if errorlevel 1 exit /b 1
+)
 
 echo Assigning a system-managed identity...
 az containerapp identity assign --name "%CONTAINER_APP_NAME%" --resource-group "%RESOURCE_GROUP_NAME%" --system-assigned --only-show-errors --output none
@@ -145,6 +171,18 @@ if not defined PRINCIPAL_ID (
     exit /b 1
 )
 
+set "ACR_ROLE_ASSIGNMENT="
+for /f "delims=" %%A in ('az role assignment list --assignee-object-id "%PRINCIPAL_ID%" --scope "%ACR_ID%" --role AcrPull --query "[0].id" --output tsv --only-show-errors') do set "ACR_ROLE_ASSIGNMENT=%%A"
+if /i "%ACR_ROLE_ASSIGNMENT%"=="None" set "ACR_ROLE_ASSIGNMENT="
+if not defined ACR_ROLE_ASSIGNMENT (
+    echo Granting the Container App identity the AcrPull role...
+    az role assignment create --assignee-object-id "%PRINCIPAL_ID%" --assignee-principal-type ServicePrincipal --role AcrPull --scope "%ACR_ID%" --only-show-errors --output none
+    if errorlevel 1 exit /b 1
+)
+echo Configuring the Container App to pull from ACR using its managed identity...
+az containerapp registry set --name "%CONTAINER_APP_NAME%" --resource-group "%RESOURCE_GROUP_NAME%" --server "%ACR_NAME%.azurecr.io" --identity system --only-show-errors --output none
+if errorlevel 1 exit /b 1
+
 set "ROLE_ASSIGNMENT="
 for /f "delims=" %%A in ('az role assignment list --assignee-object-id "%PRINCIPAL_ID%" --scope "%FOUNDRY_PROJECT_SCOPE%" --role "%FOUNDRY_USER_ROLE_DEFINITION_ID%" --query "[0].id" --output tsv --only-show-errors') do set "ROLE_ASSIGNMENT=%%A"
 if /i "%ROLE_ASSIGNMENT%"=="None" set "ROLE_ASSIGNMENT="
@@ -153,6 +191,13 @@ if not defined ROLE_ASSIGNMENT (
     az role assignment create --assignee-object-id "%PRINCIPAL_ID%" --assignee-principal-type ServicePrincipal --role "%FOUNDRY_USER_ROLE_DEFINITION_ID%" --scope "%FOUNDRY_PROJECT_SCOPE%" --only-show-errors --output none
     if errorlevel 1 exit /b 1
 )
+
+echo Deploying the backend Container App...
+az containerapp update --name "%CONTAINER_APP_NAME%" --resource-group "%RESOURCE_GROUP_NAME%" --image "%IMAGE_TAG%" --set-env-vars "FOUNDRY_PROJECT_ENDPOINT=%FOUNDRY_PROJECT_ENDPOINT%" "FOUNDRY_MODEL=%FOUNDRY_MODEL%" "APPLICATIONINSIGHTS_CONNECTION_STRING=%APPLICATIONINSIGHTS_CONNECTION_STRING%" "LLM_MAX_CONCURRENCY=%LLM_MAX_CONCURRENCY%" "ANALYSIS_TICK_SECONDS=%ANALYSIS_TICK_SECONDS%" "STREAM_DELAY_SECONDS=%STREAM_DELAY_SECONDS%" --min-replicas 1 --max-replicas 1 --only-show-errors --output none
+if errorlevel 1 exit /b 1
+az containerapp ingress update --name "%CONTAINER_APP_NAME%" --resource-group "%RESOURCE_GROUP_NAME%" --type external --target-port 8000 --only-show-errors --output none
+if errorlevel 1 exit /b 1
+
 set "API_HOST="
 for /f "delims=" %%A in ('az containerapp show --name "%CONTAINER_APP_NAME%" --resource-group "%RESOURCE_GROUP_NAME%" --query properties.configuration.ingress.fqdn --output tsv --only-show-errors') do set "API_HOST=%%A"
 if /i "%API_HOST%"=="None" set "API_HOST="

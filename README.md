@@ -142,7 +142,8 @@ the bundled synthetic replay data and the backend reads it transparently.
 
 Create a Foundry project and model deployment first. Obtain the full Azure
 resource ID of that Foundry **project**; the deployment script does not create
-Foundry resources or infer the project scope from the endpoint.
+Foundry resources or infer the project scope from the endpoint. Put this ID in
+the ignored repository-root `.env` as `FOUNDRY_PROJECT_SCOPE`.
 
 1. Edit the configuration values near the top of `infra\deploy.bat`:
    - `RESOURCE_GROUP_NAME`
@@ -151,9 +152,9 @@ Foundry resources or infer the project scope from the endpoint.
    - `CONTAINER_APP_NAME`
    - `STATIC_WEB_APP_NAME`
    - `ACR_NAME`
-   - `FOUNDRY_PROJECT_SCOPE`
-2. Ensure the repository-root `.env` contains the Foundry endpoint and model
-   deployment name. Application Insights is optional.
+2. Ensure the repository-root `.env` contains `FOUNDRY_PROJECT_ENDPOINT`,
+   `FOUNDRY_MODEL`, and `FOUNDRY_PROJECT_SCOPE`. Application Insights is
+   optional.
 3. Open cmd.exe at the repository root, sign in, select your subscription, and
    install the Static Web Apps CLI:
 
@@ -164,18 +165,23 @@ npm install -g @azure/static-web-apps-cli
 ```
 
 The batch file uses the local Docker CLI to build and push the backend image to
-ACR, updates the Container App to exactly one replica, assigns its
-system-managed identity, and grants it the Foundry User role on
+ACR with the registry admin account disabled, configures the Container App's
+system-assigned identity for image pulls, and grants it `AcrPull` on the
+registry. The identity also receives the Foundry User role on
 `FOUNDRY_PROJECT_SCOPE` using role definition ID
-`53ca6127-db72-4b80-b1b0-d745d6d5456d`. It creates a Free Static Web App,
+`53ca6127-db72-4b80-b1b0-d745d6d5456d`; the Container App is pinned to exactly
+one replica. When creating the Container App for the first time, the script
+temporarily bootstraps it with a public image so it can assign the identity
+before switching to the private ACR image. It creates a Free Static Web App,
 stages `web/` with the backend URL in `config.js`, deploys the staged content
 using the Static Web Apps CLI, and restricts backend CORS to the Static Web App
 origin. The temporary staged copy is removed after deployment.
 
-The script reads `FOUNDRY_PROJECT_ENDPOINT`, `FOUNDRY_MODEL`, and the optional
-Application Insights connection string from the process environment first,
-then `.env`. It does not print the Static Web Apps deployment token. The Azure
-account needs permission to create the resources and assign roles; role
+The script reads `FOUNDRY_PROJECT_ENDPOINT`, `FOUNDRY_MODEL`,
+`FOUNDRY_PROJECT_SCOPE`, and the optional Application Insights connection string
+from the process environment first, then `.env`. It does not print the Static
+Web Apps deployment token. The Azure account needs permission to create the
+resources, disable the registry admin account, and assign roles; role
 assignment may require an elevated Azure RBAC role such as Owner or User Access
 Administrator.
 
